@@ -34,8 +34,9 @@ if (apiKey) {
 
 // Helper to call Gemini models with retry and graceful fallback
 async function generateContentWithRetryAndFallback(ai: any, contents: any[], customConfig: any) {
-  // Use gemini-3.1-flash-lite as the absolute first choice because of its high availability and speed
-  const models = ['gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-flash-latest'];
+  // Accuracy first: counting pips is a precise vision task, so lead with the stronger
+  // model and only fall back to the faster/lite ones if it is unavailable.
+  const models = ['gemini-3.5-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
   let lastError: any = null;
 
   for (const model of models) {
@@ -119,16 +120,25 @@ app.post('/api/scan-dominoes', async (req, res) => {
         }
       },
       {
-        text: `Evaluate the set of domino tiles representing a complete player's hand in this photo.
-Identify ALL domino tiles present in the hand clearly. Do not inspect just one; find and count EVERY single piece shown in the image.
-For each separate domino piece, count the number of pips (dots) on both of its halves (left and right sections, or top and bottom sections).
-Sum up all values from all the detected tiles in the hand to find the combined total score of the hand.
-Provide your response in JSON matching the schema. If no domino is found, return an empty tiles list and totalScore 0.`
+        text: `Count the pips on EVERY domino tile in this photo.
+
+Work through it carefully, one tile at a time:
+1. Find each separate domino piece. Tiles can be horizontal or vertical; the dividing line splits each tile into two halves.
+2. For each half, count the dots precisely (0 to 6). A half can legitimately be blank (0).
+3. tile total = left half + right half.
+4. The hand total = the sum of every tile total.
+
+Important:
+- Do NOT guess. If part of a tile is hidden behind a finger or another tile, or is blurry, count only what is clearly visible and lower the confidence for that tile.
+- Re-count each half a second time before finalizing to avoid mistakes (e.g. 5 vs 6).
+- Return JSON matching the schema. If no domino is visible, return an empty tiles list and totalScore 0.`
       }
     ];
 
     const config = {
-      systemInstruction: `You are an expert AI Domino Companion Scanner. Your job is to strictly examine images containing a user's full hand of dominoes. Detect every single distinct piece, count the points (pips) on both halves of each piece, calculate the total points, and present the output in structured JSON format. Double-check your dots calculations to ensure perfect accuracy.`,
+      systemInstruction: `You are an expert AI Domino Companion Scanner. Your job is to strictly examine images containing a user's full hand of dominoes. Detect every single distinct piece, count the points (pips) on both halves of each piece, calculate the total points, and present the output in structured JSON format. Double-check your dots calculations to ensure perfect accuracy. Never guess at hidden or blurry pips — count only what is clearly visible and report low confidence instead.`,
+      // Deterministic counting: no creative sampling for a precise vision task.
+      temperature: 0,
       responseMimeType: 'application/json',
       responseSchema: {
         type: Type.OBJECT,
@@ -138,9 +148,10 @@ Provide your response in JSON matching the schema. If no domino is found, return
             items: {
               type: Type.OBJECT,
               properties: {
-                left: { type: Type.INTEGER, description: 'Dots count on one side of the domino line' },
-                right: { type: Type.INTEGER, description: 'Dots count on the other side' },
-                total: { type: Type.INTEGER, description: 'Total points of this tile' }
+                left: { type: Type.INTEGER, description: 'Dots count on one side of the domino line (0-6)' },
+                right: { type: Type.INTEGER, description: 'Dots count on the other side (0-6)' },
+                total: { type: Type.INTEGER, description: 'Total points of this tile' },
+                confidence: { type: Type.NUMBER, description: 'Confidence 0..1 that this tile was counted correctly; lower it when pips are hidden or blurry' }
               },
               required: ['left', 'right', 'total']
             }
