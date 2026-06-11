@@ -1533,28 +1533,72 @@
       if (!p || typeof p.total !== "number") return;
       if (p.from === myToken) return;   // مش اقتراحي أنا
       if (!amController()) return;      // المتحكم بس اللي يستقبل الاقتراح
-      showScanSuggestion(p.total);
+      showScanSuggestion(p);
     }).subscribe();
   }
 
-  function showScanSuggestion(total) {
+  function showScanSuggestion(p) {
     notifBar.style.display = "flex";
-    document.getElementById("notifText").textContent = "📷 اقتراح نقاط: " + ar(total);
-    notifBar._total = total;
+    var who = p.name ? " لـ " + p.name : "";
+    document.getElementById("notifText").textContent = "📷 اقتراح نقاط" + who + ": " + ar(p.total);
+    notifBar._suggestion = p;
     vibrate([30, 60, 30]);
   }
 
-  document.getElementById("scanSend").addEventListener("click", function () {
-    if (!pendingScan) return;
-    var total = pendingScan.total;
+  // اللاعب يختار هو بيصوّر لمين قبل ما يبعت — عشان المتحكم يعرف الخانة الصح.
+  var recipientBg = null;
+  function ensureRecipientPicker() {
+    if (recipientBg) return recipientBg;
+    recipientBg = document.createElement("div");
+    recipientBg.className = "sheet-bg";
+    recipientBg.innerHTML =
+      '<div class="sheet">' +
+        '<h3 style="text-align:center">مين اللاعب اللي اتصوّر؟</h3>' +
+        '<div id="recipientRow" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:16px 0"></div>' +
+        '<div class="sheet-actions"><button class="btn-cancel" id="recipientCancel">إلغاء</button></div>' +
+      '</div>';
+    document.body.appendChild(recipientBg);
+    recipientBg.addEventListener("click", function (e) { if (e.target === recipientBg) recipientBg.classList.remove("show"); });
+    recipientBg.querySelector("#recipientCancel").addEventListener("click", function () { recipientBg.classList.remove("show"); });
+    return recipientBg;
+  }
+
+  function chooseScanRecipient(total) {
+    var bg = ensureRecipientPicker();
+    var row = bg.querySelector("#recipientRow");
+    row.innerHTML = "";
+    state.seats.forEach(function (s, i) {
+      var b = document.createElement("button");
+      b.className = "pick-btn";
+      b.innerHTML = '<span>' + escapeHtml(nameOf(s)) + '</span><span class="s">' + ar(s.score) + '</span>';
+      b.addEventListener("click", function () { bg.classList.remove("show"); sendScanSuggestion(total, i); });
+      row.appendChild(b);
+    });
+    bg.classList.add("show");
+  }
+
+  function sendScanSuggestion(total, seatIdx) {
+    var seat = state.seats[seatIdx];
     if (scanChannel) {
-      scanChannel.send({ type: "broadcast", event: "scan", payload: { total: total, from: myToken, at: Date.now() } });
+      scanChannel.send({ type: "broadcast", event: "scan", payload: {
+        total: total,
+        seatId: seat ? seat.id : null,
+        seatIdx: seatIdx,
+        name: seat ? nameOf(seat) : "",
+        from: myToken,
+        at: Date.now()
+      } });
       toast("اتبعت للمتحكم ✓");
     } else {
       toast("المزامنة مقفولة — مش قادر أبعت للمتحكم دلوقتي");
     }
     closeScan();
     pendingScan = null;
+  }
+
+  document.getElementById("scanSend").addEventListener("click", function () {
+    if (!pendingScan) return;
+    chooseScanRecipient(pendingScan.total);
   });
 
   // يفتح الكيباد وهو متعبّي بالرقم فعلاً (مش مجرد عرض) عشان OK يزوّد من أول ضغطة.
@@ -1566,12 +1610,16 @@
 
   document.getElementById("notifAdd").addEventListener("click", function () {
     if (!amController()) return;
-    var total = notifBar._total;
+    var sug = notifBar._suggestion;
     notifBar.style.display = "none";
-    if (typeof total !== "number") return;
-    var target = state.seats.findIndex(function (s) { return !s.done; });
+    if (!sug || typeof sug.total !== "number") return;
+    // افتح خانة اللاعب اللي اللاعب اختاره: بالـ id الأول، وإلا بالترتيب، وإلا أول واحد لسه ماخدش دوره.
+    var target = -1;
+    if (sug.seatId) target = state.seats.findIndex(function (s) { return s.id === sug.seatId; });
+    if (target < 0 && typeof sug.seatIdx === "number" && sug.seatIdx >= 0 && sug.seatIdx < state.seats.length) target = sug.seatIdx;
+    if (target < 0) target = state.seats.findIndex(function (s) { return !s.done; });
     if (target < 0) target = 0;
-    prefillKeypad(target, total);
+    prefillKeypad(target, sug.total);
   });
 
   document.getElementById("notifDismiss").addEventListener("click", function () {
