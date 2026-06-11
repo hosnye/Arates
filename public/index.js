@@ -1597,6 +1597,7 @@
     if (recipientBg) return recipientBg;
     recipientBg = document.createElement("div");
     recipientBg.className = "sheet-bg";
+    recipientBg.style.zIndex = "70"; // فوق شاشة الكاميرا (.full-bg = 60) عشان يبان ويتضغط
     recipientBg.innerHTML =
       '<div class="sheet">' +
         '<h3 style="text-align:center">مين اللاعب اللي اتصوّر؟</h3>' +
