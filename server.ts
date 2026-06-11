@@ -33,10 +33,7 @@ if (apiKey) {
 }
 
 // Helper to call Gemini models with retry and graceful fallback
-async function generateContentWithRetryAndFallback(ai: any, contents: any[], customConfig: any) {
-  // Accuracy first: counting pips is a precise vision task, so lead with the stronger
-  // model and only fall back to the faster/lite ones if it is unavailable.
-  const models = ['gemini-3.5-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+async function generateContentWithRetryAndFallback(ai: any, contents: any[], customConfig: any, models: string[]) {
   let lastError: any = null;
 
   for (const model of models) {
@@ -94,10 +91,17 @@ async function generateContentWithRetryAndFallback(ai: any, contents: any[], cus
 // Dominoes scanning proxy route
 app.post('/api/scan-dominoes', async (req, res) => {
   try {
-    const { image, mimeType } = req.body;
+    const { image, mimeType, mode } = req.body;
     if (!image) {
       return res.status(400).json({ error: 'لم يتم استلام أي صورة للكاميرا.' });
     }
+
+    // Two scan modes:
+    //  - 'fast'    → lead with the lightweight flash-lite model (quicker, less precise)
+    //  - 'accurate'→ lead with the stronger model (default; slower but better counting)
+    const models = mode === 'fast'
+      ? ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.5-flash']
+      : ['gemini-3.5-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
 
     if (!ai) {
       // Return a graceful simulated response if API key is not configured yet
@@ -164,7 +168,7 @@ Important:
     };
 
     // Call server-side Gemini Model with retry and fallback
-    const response = await generateContentWithRetryAndFallback(ai, contents, config);
+    const response = await generateContentWithRetryAndFallback(ai, contents, config, models);
 
     const text = response.text;
     if (!text) {
