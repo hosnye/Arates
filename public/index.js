@@ -1267,6 +1267,9 @@
 
   function applyRemote(remote) {
     if (!remote || !remote.seats) return;
+    // وأنا المتحكم ونسخة السيرفر لسه شايفاني المتحكم → نسختي المحلية هي الأصل،
+    // تجاهل أي صدى قديم ممكن يرجّع نقاطي ويخليني أسجّلها تاني.
+    if (amController() && (!remote.controller || remote.controller === myToken)) { setStatus("live"); return; }
     var json = JSON.stringify(remote);
     if (json === JSON.stringify(state)) { setStatus("live"); return; }
     if (json === lastWritten) { setStatus("live"); return; }
@@ -1520,55 +1523,58 @@
     pendingScan = null;
   });
 
-  document.getElementById("scanSend").addEventListener("click", function () {
-    if (!pendingScan) return;
-    state.scanNotif = { total: pendingScan.total, from: myToken, at: Date.now() };
-    persist();
-    closeScan();
-    toast("اتبعت للمتحكم ✓");
-    pendingScan = null;
-  });
+  // قناة بث مباشرة لاقتراحات المسح — بتبعت الرقم بس من غير ما تكتب الحالة كلها،
+  // عشان نسخة اللاعب القديمة متبوّظش نقاط المتحكم (ده اللي كان بيخلّي السكور يتسجّل مرتين).
+  var scanChannel = null;
+  if (sb) {
+    scanChannel = sb.channel("scan-suggest", { config: { broadcast: { self: false } } });
+    scanChannel.on("broadcast", { event: "scan" }, function (msg) {
+      var p = msg && msg.payload;
+      if (!p || typeof p.total !== "number") return;
+      if (p.from === myToken) return;   // مش اقتراحي أنا
+      if (!amController()) return;      // المتحكم بس اللي يستقبل الاقتراح
+      showScanSuggestion(p.total);
+    }).subscribe();
+  }
 
-  var lastNotifAt = 0;
-  function checkScanNotif() {
-    if (!state.scanNotif) return;
-    if (state.scanNotif.at === lastNotifAt) return;
-    if (state.scanNotif.from === myToken) return;
-    if (!amController()) return;
-    lastNotifAt = state.scanNotif.at;
+  function showScanSuggestion(total) {
     notifBar.style.display = "flex";
-    document.getElementById("notifText").textContent = "📷 اقتراح نقاط: " + ar(state.scanNotif.total);
-    notifBar._total = state.scanNotif.total;
+    document.getElementById("notifText").textContent = "📷 اقتراح نقاط: " + ar(total);
+    notifBar._total = total;
     vibrate([30, 60, 30]);
   }
 
-  var _origApplyRemote = applyRemote;
-  applyRemote = function (remote) {
-    _origApplyRemote(remote);
-    setTimeout(checkScanNotif, 100);
-  };
+  document.getElementById("scanSend").addEventListener("click", function () {
+    if (!pendingScan) return;
+    var total = pendingScan.total;
+    if (scanChannel) {
+      scanChannel.send({ type: "broadcast", event: "scan", payload: { total: total, from: myToken, at: Date.now() } });
+      toast("اتبعت للمتحكم ✓");
+    } else {
+      toast("المزامنة مقفولة — مش قادر أبعت للمتحكم دلوقتي");
+    }
+    closeScan();
+    pendingScan = null;
+  });
+
+  // يفتح الكيباد وهو متعبّي بالرقم فعلاً (مش مجرد عرض) عشان OK يزوّد من أول ضغطة.
+  function prefillKeypad(i, value) {
+    openKeypad(i, "add");
+    kpVal = String(value);
+    refreshKp();
+  }
 
   document.getElementById("notifAdd").addEventListener("click", function () {
     if (!amController()) return;
     var total = notifBar._total;
+    notifBar.style.display = "none";
+    if (typeof total !== "number") return;
     var target = state.seats.findIndex(function (s) { return !s.done; });
     if (target < 0) target = 0;
-    openKeypad(target, "add");
-    setTimeout(function () {
-      var kpDisp = document.getElementById("kpDisp");
-      var kpVal = total;
-      kpDisp.textContent = ar(kpVal);
-      kpDisp.classList.remove("empty");
-      kpDisp.dataset.val = kpVal;
-      var kpPreview = document.getElementById("kpPreview");
-      if (kpPreview) kpPreview.textContent = "هيبقى " + ar(state.seats[target].score + kpVal);
-    }, 80);
-    notifBar.style.display = "none";
-    delete state.scanNotif; persist();
+    prefillKeypad(target, total);
   });
 
   document.getElementById("notifDismiss").addEventListener("click", function () {
     notifBar.style.display = "none";
-    delete state.scanNotif; persist();
   });
 })();
