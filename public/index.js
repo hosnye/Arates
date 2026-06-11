@@ -1438,14 +1438,53 @@
   var scanStream = null;
   var pendingScan = null;
 
+  // وضع المسح: «سريع» (موديل lite، أسرع ودقة أقل) أو «دقيق» (الموديل الأقوى). متخزّن على الجهاز.
+  var SCAN_MODE_KEY = "qahwa_scan_mode";
+  var scanMode = (function () { try { return localStorage.getItem(SCAN_MODE_KEY) || "accurate"; } catch (e) { return "accurate"; } })();
+  var scanModeToggle = null;
+  function syncScanModeToggle() {
+    if (!scanModeToggle) return;
+    scanModeToggle.querySelectorAll("button").forEach(function (b) {
+      var on = b.dataset.m === scanMode;
+      b.style.background = on ? "var(--gold)" : "transparent";
+      b.style.color = on ? "#171009" : "rgba(255,255,255,.75)";
+    });
+  }
+  function buildScanModeToggle() {
+    if (scanModeToggle) { syncScanModeToggle(); return; }
+    var wrap = document.createElement("div");
+    wrap.id = "scanModeToggle";
+    wrap.style.cssText = "position:absolute;top:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:4px;z-index:6";
+    wrap.innerHTML =
+      '<button data-m="fast" style="border:0;border-radius:999px;padding:7px 14px;font-family:inherit;font-weight:800;font-size:13px;cursor:pointer">⚡ سريع</button>' +
+      '<button data-m="accurate" style="border:0;border-radius:999px;padding:7px 14px;font-family:inherit;font-weight:800;font-size:13px;cursor:pointer">🎯 دقيق</button>';
+    var vf = scanBg.querySelector(".scan-viewfinder") || scanBg.querySelector(".scan-shell") || scanBg;
+    vf.appendChild(wrap);
+    wrap.querySelectorAll("button").forEach(function (b) {
+      b.addEventListener("click", function (e) {
+        e.stopPropagation();
+        scanMode = b.dataset.m;
+        try { localStorage.setItem(SCAN_MODE_KEY, scanMode); } catch (err) {}
+        syncScanModeToggle();
+        vibrate(8);
+        toast(scanMode === "fast" ? "وضع سريع ⚡ (أسرع · دقة أقل)" : "وضع دقيق 🎯 (أبطأ شوية · أدق)");
+      });
+    });
+    scanModeToggle = wrap;
+    syncScanModeToggle();
+  }
+
   document.getElementById("scanBtn").addEventListener("click", openScan);
 
   function openScan() {
     scanResult.style.display = "none";
     scanShutter.style.display = "grid";
     scanHint.textContent = "صوّر قطع الدومينو اللي في إيدك";
+    buildScanModeToggle();
+    if (scanModeToggle) scanModeToggle.style.display = "flex";
     scanBg.classList.add("show");
     startCamera();
+    try { scanVideo.play(); } catch (e) {}
   }
 
   function startCamera() {
@@ -1470,23 +1509,27 @@
   });
 
   function captureAndAnalyze() {
-    scanShutter.classList.add("scan-processing");
-    scanHint.textContent = "بيحلل القطع…";
-    vibrate(18);
-
     var vw = scanVideo.videoWidth, vh = scanVideo.videoHeight;
-    if (!vw || !vh) { toast("الكاميرا لسه مش جاهزة"); scanShutter.classList.remove("scan-processing"); return; }
+    if (!vw || !vh) { toast("الكاميرا لسه مش جاهزة"); return; }
+
+    // اتصوّرت الصورة هنا على طول — مفيش داعي تفضل مصوّب الكاميرا بعد كده.
     scanCanvas.width = vw; scanCanvas.height = vh;
     var ctx = scanCanvas.getContext("2d");
     ctx.drawImage(scanVideo, 0, 0, vw, vh);
     var b64 = scanCanvas.toDataURL("image/jpeg", 0.88).split(",")[1];
+    try { scanVideo.pause(); } catch (e) {}   // جمّد اللقطة كإشارة إن الصورة اتاخدت
+
+    scanShutter.classList.add("scan-processing");
+    scanHint.textContent = scanMode === "fast" ? "📸 اتصوّرت ✓ بيحلل بسرعة…" : "📸 اتصوّرت ✓ بيحلل بدقة…";
+    vibrate(18);
 
     fetch("/api/scan-dominoes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         image: b64,
-        mimeType: "image/jpeg"
+        mimeType: "image/jpeg",
+        mode: scanMode
       })
     })
     .then(function (r) {
@@ -1509,6 +1552,7 @@
   function showScanResult(total, tiles) {
     scanShutter.classList.remove("scan-processing");
     scanShutter.style.display = "none";
+    if (scanModeToggle) scanModeToggle.style.display = "none";
     document.getElementById("scanTotal").textContent = ar(total);
     document.getElementById("scanDetail").textContent = tiles && tiles.length ? tiles.join("  ·  ") : "";
     pendingScan = { total: total };
@@ -1519,7 +1563,9 @@
   document.getElementById("scanRetry").addEventListener("click", function () {
     scanResult.style.display = "none";
     scanShutter.style.display = "grid";
+    if (scanModeToggle) scanModeToggle.style.display = "flex";
     scanHint.textContent = "صوّر قطع الدومينو اللي في إيدك";
+    try { scanVideo.play(); } catch (e) {}   // رجّع البث المباشر للقطة جديدة
     pendingScan = null;
   });
 
