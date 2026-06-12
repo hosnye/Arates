@@ -1483,6 +1483,16 @@
 
   // محرّك الكشف اللحظي (موديل على الجهاز): بيشتغل لايف ويقفل القراءة لمّا تثبت.
   var detector = null;
+  var detectorReady = false;
+  function syncScanHint() {
+    if (detector && !detectorReady && detector.backend !== "mock") {
+      scanHint.textContent = "⏳ بحمّل العدّاد لأول مرة… ثانية";
+    } else if (detector && detector.backend === "mock") {
+      scanHint.textContent = "🧪 نتايج تجريبية — وجّه على القطع";
+    } else {
+      scanHint.textContent = "وجّه الكاميرا على القطع وثبّت شوية";
+    }
+  }
   var scanLive = false, scanRAF = 0, scanInflight = false, scanLastInfer = 0, scanLocked = false;
   var scanRecent = [];                 // آخر كام قراءة عشان نتأكد إنها ثابتة قبل القفل
   var SCAN_INTERVAL_MS = 300;          // ~3 لقطات/ثانية — إحساس لايف من غير ما تستهلك البطارية
@@ -1507,15 +1517,17 @@
   });
 
   function openScan() {
-    if (!detector) detector = window.DominoDetector.create();   // العدّاد بيشتغل على الجهاز
+    // PipTracker YOLOv5 model (MIT, Ricky Hartmann) يشتغل بالكامل على الجهاز عبر TensorFlow.js
+    if (!detector) {
+      detector = (window.DominoPipTracker || window.DominoDetector).create();
+      detector.ready.then(function () { detectorReady = true; if (scanBg.classList.contains("show")) syncScanHint(); });
+    }
     warmServer();                                               // نخلّي السيرفر صاحي عشان تحميل الموديل والصفحة يبقى سريع
     scanResult.style.display = "none";
     scanShutter.style.display = "none";                         // مفيش زرار تصوير — القفل تلقائي
     scanLiveTotal.style.display = "none";
     scanLiveTotal.classList.remove("locked");
-    scanHint.textContent = detector.backend === "mock"
-      ? "🧪 نتايج تجريبية — وجّه على القطع"
-      : "وجّه الكاميرا على القطع وثبّت شوية";
+    syncScanHint();
     scanBg.classList.add("show");
     startCamera();
     try { scanVideo.play(); } catch (e) {}
