@@ -1493,10 +1493,13 @@
       scanHint.textContent = "وجّه الكاميرا على القطع وثبّت شوية";
     }
   }
-  var scanLive = false, scanRAF = 0, scanInflight = false, scanLastInfer = 0, scanLocked = false;
+  var scanLive = false, scanRAF = 0, scanInflight = false, scanLastDone = 0, scanLocked = false;
   var scanRecent = [];                 // آخر كام قراءة عشان نتأكد إنها ثابتة قبل القفل
-  var SCAN_INTERVAL_MS = 80;           // أسرع ما يقدر الجهاز (~12 لقطة/ث) — الرقم يتحدّث لحظياً.
-                                       // single-flight بيمنع التكدّس، فعلياً بيحدّه زمن الاستدلال نفسه.
+  // مهلة فاضية مضمونة بعد كل استدلال: الاستدلال (WebGL) بيتنافس مع الكاميرا وطبقة
+  // الرسم على نفس الـ GPU. لو شغّلناه ورا بعض الأنميشن بيهنّج. نضمن ~75ms فاضيين بعد
+  // كل استدلال عشان الكاميرا والرسم ياخدوا نفَس — يطلع سلس على أي موبايل (المهلة من
+  // وقت الانتهاء مش البداية، فالموبايل البطيء مايشتغلش ورا بعض).
+  var SCAN_COOLDOWN_MS = 75;
   var SCAN_STABLE_FRAMES = 3;          // لازم نفس المجموع 3 مرات (~ثانية) قبل القفل
   var SCAN_MIN_CONF = 0.62;            // ثقة أقل من كده = لسه بيدوّر
 
@@ -1569,7 +1572,7 @@
     scanLive = true;
     scanRecent = [];
     prevScanBoxes = [];
-    scanLastInfer = 0;
+    scanLastDone = 0;
     scanLiveTotal.classList.remove("locked");
     ovBoxes = []; ovLocked = false;
     startOverlay();
@@ -1586,14 +1589,13 @@
     scanRAF = requestAnimationFrame(scanTick);
     if (!detectorReady) return;                        // الموديل لسه بيتجهّز — مانبعتش فريمات تهنّج الكاميرا
     if (scanInflight) return;                          // single-flight: قطعة واحدة في المرة
-    if (ts - scanLastInfer < SCAN_INTERVAL_MS) return; // كبح لـ ~3 لقطات/ثانية
-    scanLastInfer = ts;
+    if (ts - scanLastDone < SCAN_COOLDOWN_MS) return;  // سيب الـ GPU يتنفّس بعد آخر استدلال
     var frame = grabScanFrame();                       // اللقطة الحالية (مقصوصة زي اللي ظاهر)
     scanInflight = true;
     detector.detect(frame).then(function (res) {
-      scanInflight = false;
+      scanInflight = false; scanLastDone = performance.now();
       if (scanLive) onScanDetect(res);
-    }).catch(function () { scanInflight = false; });
+    }).catch(function () { scanInflight = false; scanLastDone = performance.now(); });
   }
 
   // ناخد بس الجزء الظاهر من الفيديو (object-fit: cover) ونصغّره للموديل.
