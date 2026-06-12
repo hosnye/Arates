@@ -8,6 +8,17 @@ images for free, and — crucially — control the hard cases (rotation, glare,
 occlusion, blank halves, the 5-vs-6 confusion) that a general LLM keeps getting
 wrong.  This is what gets a dedicated model to ~98%+.
 
+v2 — realism upgrade after real-phone testing showed false positives:
+  * Tile colours are cream/ivory/pale-yellow (real tiles are rarely pure white).
+  * Backgrounds include floral/cluttered fabric and blotchy textures (patterned
+    carpets were triggering phantom pips), not just clean gradients.
+  * Distractor dot-clusters drawn ON the background teach "a dot is only a pip
+    when it's inside a tile".
+  * ~12% of images are background-only negatives (model must output nothing).
+  * Half the multi-tile images lay tiles touching in a ROW like a real hand —
+    scattered-only layouts made the model miss halves of adjacent tiles.
+  * Dimmer/warmer lighting + stronger blur to match indoor evening phone shots.
+
 Label design — we detect each domino *half* as its own object whose class is the
 pip count (0..6).  That means:
   * 7 classes, clean and balanced.
@@ -56,9 +67,15 @@ PIP_LAYOUT = {
 
 
 def rand_tile_color():
-    base = random.randint(225, 255)
-    # slight warm/cool tint so the model doesn't overfit to pure white
-    return (base, base - random.randint(0, 12), base - random.randint(0, 20))
+    # Real dominoes are rarely pure white — bias toward the cream/ivory/pale-yellow
+    # tiles the scanner actually gets pointed at.
+    if random.random() < 0.25:                       # white-ish minority
+        base = random.randint(230, 255)
+        return (base, base - random.randint(0, 10), base - random.randint(0, 18))
+    r = random.randint(222, 248)
+    g = r - random.randint(4, 18)
+    b = g - random.randint(20, 70)
+    return (r, g, max(130, b))
 
 
 def draw_half(draw, ox, oy, side, value, pip_color):
@@ -90,7 +107,9 @@ def render_tile(side, left, right, horizontal):
                         fill=tile_col, outline=(60, 60, 60), width=max(1, side // 60))
 
     line_col = (90, 90, 90)
-    pip_col = (20, 20, 20)
+    # Pips on real tiles range from pure black to dark navy.
+    shade = random.randint(10, 40)
+    pip_col = (shade, shade, shade + random.randint(0, 25))
     if horizontal:
         mx = pad + side
         d.line([mx, pad + side * 0.12, mx, pad + side * 0.88], fill=line_col, width=max(2, side // 40))
@@ -132,7 +151,18 @@ def rotated_bbox(box, w, h, angle_deg, W, H):
     return min(xs), min(ys), max(xs), max(ys)
 
 
-def make_background(W, H):
+# Palettes sampled from the kinds of surfaces phones actually point at:
+# patterned carpets, sofas, wood tables, green play cloth.
+PALETTES = [
+    [(94, 52, 46), (146, 90, 70), (196, 160, 124), (60, 34, 30), (170, 120, 96)],     # carpet reds/browns
+    [(60, 62, 70), (110, 116, 128), (160, 160, 150), (40, 40, 46), (90, 80, 70)],     # grey sofa
+    [(118, 86, 52), (150, 112, 70), (92, 64, 40), (180, 142, 96), (70, 48, 30)],      # wood table
+    [(70, 90, 60), (120, 140, 100), (50, 60, 44), (160, 170, 130), (100, 110, 80)],   # green cloth
+    [(140, 60, 60), (190, 150, 140), (90, 40, 44), (210, 190, 170), (120, 90, 86)],   # red floral
+]
+
+
+def gradient_bg(W, H):
     # vertical gradient between two random colours (vectorised with numpy)
     c1 = np.array([random.randint(30, 200) for _ in range(3)], dtype=np.float32)
     c2 = np.array([random.randint(30, 200) for _ in range(3)], dtype=np.float32)
@@ -145,6 +175,62 @@ def make_background(W, H):
     xs = np.random.randint(0, W, n)
     arr[ys, xs] = np.random.randint(0, 256, (n, 1))
     return Image.fromarray(arr.astype(np.uint8), "RGB")
+
+
+def pattern_bg(W, H):
+    """Floral/cluttered fabric — the hard real-world case (patterned carpets)."""
+    pal = random.choice(PALETTES)
+    bg = Image.new("RGB", (W, H), pal[0])
+    d = ImageDraw.Draw(bg, "RGBA")
+    for _ in range(random.randint(40, 120)):
+        col = random.choice(pal) + (random.randint(70, 180),)
+        cx, cy = random.randint(0, W), random.randint(0, H)
+        rw, rh = random.randint(8, W // 4), random.randint(8, H // 4)
+        if random.random() < 0.6:
+            d.ellipse([cx - rw // 2, cy - rh // 2, cx + rw // 2, cy + rh // 2], fill=col)
+        else:
+            d.arc([cx - rw, cy - rh, cx + rw, cy + rh],
+                  random.randint(0, 360), random.randint(0, 360),
+                  fill=random.choice(pal), width=random.randint(2, 6))
+    return bg.filter(ImageFilter.GaussianBlur(random.uniform(0.5, 2.0)))
+
+
+def texture_bg(W, H):
+    """Low-frequency blotchy texture (fabric weave / wood-grain-ish)."""
+    pal = random.choice(PALETTES)
+    c1 = np.array(pal[0], np.float32)
+    c2 = np.array(pal[2], np.float32)
+    small = np.random.rand(H // 8 + 1, W // 8 + 1).astype(np.float32)
+    noise = np.kron(small, np.ones((8, 8), np.float32))[:H, :W]
+    arr = c1[None, None] * (1 - noise[..., None]) + c2[None, None] * noise[..., None]
+    img = Image.fromarray(arr.astype(np.uint8), "RGB")
+    return img.filter(ImageFilter.GaussianBlur(random.uniform(1.0, 3.0)))
+
+
+def add_distractor_dots(bg):
+    """Dark round dots ON the background — teaches 'a dot is only a pip inside a tile'."""
+    d = ImageDraw.Draw(bg)
+    W, H = bg.size
+    for _ in range(random.randint(0, 3)):            # clusters
+        cx, cy = random.randint(0, W), random.randint(0, H)
+        r = random.randint(4, 11)
+        for _ in range(random.randint(2, 9)):
+            x = cx + random.randint(-60, 60)
+            y = cy + random.randint(-60, 60)
+            shade = random.randint(15, 60)
+            d.ellipse([x - r, y - r, x + r, y + r], fill=(shade, shade, shade + random.randint(0, 15)))
+
+
+def make_background(W, H):
+    roll = random.random()
+    if roll < 0.30:
+        bg = gradient_bg(W, H)
+    elif roll < 0.72:
+        bg = pattern_bg(W, H)
+    else:
+        bg = texture_bg(W, H)
+    add_distractor_dots(bg)
+    return bg
 
 
 def add_fingers(img, n):
@@ -165,14 +251,19 @@ def add_fingers(img, n):
 
 
 def augment(img):
+    if random.random() < 0.85:
+        # down to 0.45 — evening indoor shots are much dimmer than clean renders
+        img = ImageEnhance.Brightness(img).enhance(random.uniform(0.45, 1.25))
     if random.random() < 0.8:
-        img = ImageEnhance.Brightness(img).enhance(random.uniform(0.65, 1.25))
-    if random.random() < 0.8:
-        img = ImageEnhance.Contrast(img).enhance(random.uniform(0.8, 1.25))
+        img = ImageEnhance.Contrast(img).enhance(random.uniform(0.75, 1.25))
     if random.random() < 0.5:
-        img = ImageEnhance.Color(img).enhance(random.uniform(0.7, 1.3))
-    if random.random() < 0.35:
-        img = img.filter(ImageFilter.GaussianBlur(random.uniform(0.4, 1.4)))
+        img = ImageEnhance.Color(img).enhance(random.uniform(0.7, 1.35))
+    if random.random() < 0.5:
+        # warm indoor light cast (incandescent bulbs)
+        warm = Image.new("RGB", img.size, (255, 180, 90))
+        img = Image.blend(img, warm, random.uniform(0.04, 0.16))
+    if random.random() < 0.5:
+        img = img.filter(ImageFilter.GaussianBlur(random.uniform(0.4, 2.0)))
     return img
 
 
@@ -180,23 +271,46 @@ def generate_one(idx, debug=False):
     W = random.randint(640, 1024)
     H = random.randint(512, 1024)
     canvas = make_background(W, H).convert("RGBA")
-
-    n_tiles = random.randint(1, 7)
     labels = []  # (cls, cx, cy, bw, bh) normalised
 
+    # ~12% pure negatives: background only — the model must learn to output nothing.
+    n_tiles = 0 if random.random() < 0.12 else random.randint(1, 7)
+
+    # Half the multi-tile images lay the tiles touching in a row like a real hand.
+    row_layout = n_tiles >= 2 and random.random() < 0.5
+    if row_layout:
+        row_side = random.randint(70, 130)
+        row_horizontal = random.random() < 0.2       # hands are usually vertical tiles side by side
+        base_y = random.randint(int(H * 0.2), int(H * 0.55))
+        x_cursor = random.randint(8, max(9, W - n_tiles * (row_side + 20) - 8))
+
     for _ in range(n_tiles):
-        side = random.randint(70, 150)
-        horizontal = random.random() < 0.5
+        if row_layout:
+            angle = random.uniform(-8, 8)
+            horizontal = row_horizontal
+            side = row_side
+        else:
+            angle = random.uniform(-45, 45)
+            horizontal = random.random() < 0.5
+            side = random.randint(60, 150)
         left, right = random.randint(0, 6), random.randint(0, 6)
         layer, halves = render_tile(side, left, right, horizontal)
 
-        angle = random.uniform(-45, 45)
         rot = layer.rotate(angle, expand=True, resample=Image.BICUBIC)
         RW, RH = rot.size
-        if RW >= W or RH >= H:
-            continue
-        px = random.randint(0, W - RW)
-        py = random.randint(0, H - RH)
+        if row_layout:
+            pad = max(4, int(side * 0.12))
+            px = x_cursor + random.randint(-3, 3)
+            py = base_y + random.randint(-10, 10)
+            # advance so tile faces touch / nearly touch like a held hand
+            x_cursor += RW - 2 * pad + random.randint(0, 10)
+            if px < 0 or py < 0 or px + RW >= W or py + RH >= H:
+                continue
+        else:
+            if RW >= W or RH >= H:
+                continue
+            px = random.randint(0, W - RW)
+            py = random.randint(0, H - RH)
         canvas.alpha_composite(rot, (px, py))
 
         for value, box in halves:
@@ -213,7 +327,7 @@ def generate_one(idx, debug=False):
             labels.append((value, cx, cy, bw, bh))
 
     img = canvas.convert("RGB")
-    if random.random() < 0.4:
+    if n_tiles and random.random() < 0.45:
         add_fingers(img, random.randint(1, 2))
     img = augment(img)
 

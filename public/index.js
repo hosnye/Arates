@@ -1544,6 +1544,7 @@
     scanLocked = false;
     scanLive = true;
     scanRecent = [];
+    prevScanBoxes = [];
     scanLastInfer = 0;
     scanLiveTotal.classList.remove("locked");
     if (scanRAF) cancelAnimationFrame(scanRAF);
@@ -1584,19 +1585,41 @@
     return scanCanvas;
   }
 
+  // فلتر الاستمرارية: الصندوق لازم يظهر في لقطتين متتاليتين (نفس المكان ونفس الرقم)
+  // قبل ما يتحسب — بيقتل الومضات الكاذبة اللي بتطلع لحظياً على الخلفيات المزخرفة.
+  var prevScanBoxes = [];
+  function boxOverlap(a, b) {
+    var ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+    var iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+    if (ix <= 0 || iy <= 0) return 0;
+    var inter = ix * iy;
+    return inter / (a.w * a.h + b.w * b.h - inter);
+  }
+  function persistentBoxes(boxes) {
+    var prev = prevScanBoxes;
+    prevScanBoxes = boxes;
+    return boxes.filter(function (b) {
+      return prev.some(function (p) { return p.cls === b.cls && boxOverlap(p, b) > 0.3; });
+    });
+  }
+
   function onScanDetect(res) {
-    drawScanOverlay(res.boxes, false);
+    var boxes = persistentBoxes(res.boxes || []);
+    var total = boxes.reduce(function (s, b) { return s + b.cls; }, 0);
+    var conf = boxes.length ? boxes.reduce(function (s, b) { return s + b.conf; }, 0) / boxes.length : 0;
+
+    drawScanOverlay(boxes, false);
     scanLiveTotal.style.display = "block";
-    scanLiveNum.textContent = ar(res.total);
+    scanLiveNum.textContent = ar(total);
 
     // ثبات: نفس المجموع SCAN_STABLE_FRAMES مرات متتالية + ثقة كفاية + مجموع > 0
-    scanRecent.push({ total: res.total, conf: res.conf });
+    scanRecent.push({ total: total, conf: conf });
     if (scanRecent.length > SCAN_STABLE_FRAMES) scanRecent.shift();
     if (scanRecent.length === SCAN_STABLE_FRAMES) {
       var first = scanRecent[0].total;
       var allSame = scanRecent.every(function (r) { return r.total === first; });
       var meanConf = scanRecent.reduce(function (s, r) { return s + r.conf; }, 0) / scanRecent.length;
-      if (allSame && first > 0 && meanConf >= SCAN_MIN_CONF) lockScanReading(res);
+      if (allSame && first > 0 && meanConf >= SCAN_MIN_CONF) lockScanReading({ boxes: boxes, total: total, conf: conf });
     }
   }
 
