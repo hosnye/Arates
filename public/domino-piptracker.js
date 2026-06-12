@@ -93,5 +93,11 @@
     return api;
   }
 
-  window.DominoPipTracker = { create: function () { return PipTrackerDetector(); } };
+  // Singleton: the model + warmup cost is paid ONCE; create() from anywhere
+  // (idle preload at app start, or the camera button) shares the same instance.
+  var singleton = null;
+  window.DominoPipTracker = {
+    create: function () { return singleton || (singleton = PipTrackerDetector()); },
+    preload: function () { return this.create().ready; }
+  };
 })();

@@ -1499,6 +1499,20 @@
   var SCAN_STABLE_FRAMES = 3;          // لازم نفس المجموع 3 مرات (~ثانية) قبل القفل
   var SCAN_MIN_CONF = 0.62;            // ثقة أقل من كده = لسه بيدوّر
 
+  // بنحمّل الموديل ونسخّنه في الخلفية أول ما التطبيق يفتح (مش أول ما الكاميرا تفتح):
+  // تحميل TF.js + الموديل + ترجمة شيدرز WebGL بياخدوا ثواني، ولو حصلوا والكاميرا
+  // شغّالة بيهنّجوا الصورة — فبنخلّصهم بدري وأول فتح للماسح يبقى فوري وسلس.
+  function preloadDetector() {
+    if (detector) return;
+    if (!window.DominoPipTracker && !window.DominoDetector) return;
+    detector = (window.DominoPipTracker || window.DominoDetector).create();
+    detector.ready.then(function () {
+      detectorReady = true;
+      if (scanBg.classList.contains("show")) syncScanHint();
+    });
+  }
+  (window.requestIdleCallback || function (f) { setTimeout(f, 1200); })(preloadDetector);
+
   document.getElementById("scanBtn").addEventListener("click", openScan);
 
   // السيرفر المجاني على Render بينام بعد ~15 دقيقة، وأول طلب بياخد ~30 ثانية يصحى.
@@ -1518,10 +1532,7 @@
 
   function openScan() {
     // PipTracker YOLOv5 model (MIT, Ricky Hartmann) يشتغل بالكامل على الجهاز عبر TensorFlow.js
-    if (!detector) {
-      detector = (window.DominoPipTracker || window.DominoDetector).create();
-      detector.ready.then(function () { detectorReady = true; if (scanBg.classList.contains("show")) syncScanHint(); });
-    }
+    preloadDetector();                                          // غالباً محمّل خلاص من الخلفية — دي مجرد ضمانة
     warmServer();                                               // نخلّي السيرفر صاحي عشان تحميل الموديل والصفحة يبقى سريع
     scanResult.style.display = "none";
     scanShutter.style.display = "none";                         // مفيش زرار تصوير — القفل تلقائي
@@ -1559,17 +1570,20 @@
     prevScanBoxes = [];
     scanLastInfer = 0;
     scanLiveTotal.classList.remove("locked");
+    ovBoxes = []; ovLocked = false;
+    startOverlay();
     if (scanRAF) cancelAnimationFrame(scanRAF);
     scanRAF = requestAnimationFrame(scanTick);
   }
   function stopScanLoop() {
     scanLive = false;
     if (scanRAF) { cancelAnimationFrame(scanRAF); scanRAF = 0; }
-    clearScanOverlay();
+    stopOverlay();
   }
   function scanTick(ts) {
     if (!scanLive) return;
     scanRAF = requestAnimationFrame(scanTick);
+    if (!detectorReady) return;                        // الموديل لسه بيتجهّز — مانبعتش فريمات تهنّج الكاميرا
     if (scanInflight) return;                          // single-flight: قطعة واحدة في المرة
     if (ts - scanLastInfer < SCAN_INTERVAL_MS) return; // كبح لـ ~3 لقطات/ثانية
     scanLastInfer = ts;
@@ -1638,7 +1652,7 @@
       scanHint.textContent = "بيتأكد من عدّ النقط — ثبّت أو قرّب شوية";
     }
 
-    drawScanOverlay(boxes, false);
+    updateOverlayTargets(boxes, false);
     scanLiveTotal.style.display = "block";
     scanLiveNum.textContent = ar(total);
 
@@ -1659,20 +1673,59 @@
     scanLocked = true;
     scanLive = false;
     if (scanRAF) { cancelAnimationFrame(scanRAF); scanRAF = 0; }   // وقّف الكشف لتوفير البطارية
-    drawScanOverlay(res.boxes, true);                              // صناديق خضرا = اتأكدنا
+    updateOverlayTargets(res.boxes, true);                         // صناديق خضرا = اتأكدنا (طبقة الرسم شغّالة لسه)
     scanLiveTotal.classList.add("locked");
     scanLiveNum.textContent = ar(res.total);
     vibrate([20, 40, 20]);
     showScanResult(res.total, pairTilesForDisplay(res.boxes));
   }
 
-  function clearScanOverlay() {
+  /* ===== رسم الصناديق: طبقة متحركة 60fps =====
+     الكشف بيحصل كل ~300ms، فلو رسمنا نتايجه مباشرةً الصناديق "بتنطّ". بدل كده
+     الكشف بيحدّث "أهداف"، وحلقة رسم منفصلة بتزحلق كل صندوق نحو هدفه بنعومة،
+     مع ظهور/اختفاء تدريجي وأقواس زوايا بدل إطار مصمت — شكل ماسح احترافي. */
+  var ovBoxes = [];                    // حالة العرض المتحركة لكل صندوق
+  var ovLocked = false, ovRAF = 0, ovLockAt = 0;
+
+  function updateOverlayTargets(boxes, locked) {
+    ovLocked = locked;
+    if (locked) ovLockAt = performance.now();
+    ovBoxes.forEach(function (st) { st.matched = false; });
+    (boxes || []).forEach(function (b) {
+      // نطابق كل كشف جديد بأقرب صندوق معروض من نفس الرقم عشان يتحرّك له بدل ما يترسم من أول
+      var best = -1, bestOv = 0.2;
+      for (var i = 0; i < ovBoxes.length; i++) {
+        if (ovBoxes[i].matched || ovBoxes[i].cls !== b.cls) continue;
+        var ov = boxOverlap(ovBoxes[i], b);
+        if (ov > bestOv) { bestOv = ov; best = i; }
+      }
+      if (best >= 0) {
+        var st = ovBoxes[best];
+        st.matched = true; st.verified = b.verified;
+        st.tx = b.x; st.ty = b.y; st.tw = b.w; st.th = b.h; st.ta = 1;
+      } else {
+        ovBoxes.push({ cls: b.cls, verified: b.verified,
+                       x: b.x, y: b.y, w: b.w, h: b.h,
+                       tx: b.x, ty: b.y, tw: b.w, th: b.h,
+                       a: 0, ta: 1, s: 0.88, matched: true });
+      }
+    });
+    ovBoxes.forEach(function (st) { if (!st.matched) st.ta = 0; });   // اختفى من الكشف → يتلاشى
+  }
+
+  function startOverlay() {
+    if (!ovRAF) ovRAF = requestAnimationFrame(overlayLoop);
+  }
+  function stopOverlay() {
+    if (ovRAF) { cancelAnimationFrame(ovRAF); ovRAF = 0; }
+    ovBoxes = []; ovLocked = false;
     var ctx = scanOverlay.getContext("2d");
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, scanOverlay.width, scanOverlay.height);
   }
-  // نرسم الصناديق فوق الفيديو، كل صندوق مكتوب عليه عدد نقطه.
-  function drawScanOverlay(boxes, locked) {
+
+  function overlayLoop() {
+    ovRAF = requestAnimationFrame(overlayLoop);
     var rect = scanVideo.getBoundingClientRect();
     var W = rect.width, H = rect.height, dpr = window.devicePixelRatio || 1;
     if (!W || !H) return;
@@ -1682,21 +1735,48 @@
     var ctx = scanOverlay.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    var stroke = locked ? "#9ed47f" : "rgba(255,255,255,.9)";
-    var fill = locked ? "rgba(133,180,110,.18)" : "rgba(255,255,255,.06)";
-    (boxes || []).forEach(function (b) {
-      var x = b.x * W, y = b.y * H, w = b.w * W, h = b.h * H;
-      ctx.lineWidth = 2.5; ctx.strokeStyle = stroke; ctx.fillStyle = fill;
-      roundRectPath(ctx, x, y, w, h, 9); ctx.fill(); ctx.stroke();
-      var label = ar(b.cls);
-      ctx.font = "800 15px Tajawal, sans-serif";
-      var tw = ctx.measureText(label).width + 12;
-      // كهرماني = العدّاد البيكسلي لسه مش موافق على الرقم ده
-      ctx.fillStyle = locked ? "#5f9243" : (b.verified === false ? "#b5742a" : "rgba(0,0,0,.7)");
-      roundRectPath(ctx, x, y - 21, tw, 19, 6); ctx.fill();
-      ctx.fillStyle = "#fff"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
-      ctx.fillText(label, x + 6, y - 11);
-    });
+    // نبضة خفيفة لحظة القفل بتدّي إحساس "تمّ" من غير ما تلهي
+    var pulse = ovLocked ? 1 + Math.max(0, 1 - (performance.now() - ovLockAt) / 260) * 0.05 : 1;
+    for (var i = ovBoxes.length - 1; i >= 0; i--) {
+      var st = ovBoxes[i];
+      st.x += (st.tx - st.x) * 0.22; st.y += (st.ty - st.y) * 0.22;
+      st.w += (st.tw - st.w) * 0.22; st.h += (st.th - st.h) * 0.22;
+      st.a += (st.ta - st.a) * 0.25; st.s += (1 - st.s) * 0.2;
+      if (st.ta === 0 && st.a < 0.04) { ovBoxes.splice(i, 1); continue; }
+      drawBracketBox(ctx, st, W, H, pulse);
+    }
+  }
+
+  function drawBracketBox(ctx, st, W, H, pulse) {
+    var w = st.w * W * st.s * pulse, h = st.h * H * st.s * pulse;
+    var cx = (st.x + st.w / 2) * W, cyc = (st.y + st.h / 2) * H;
+    var x = cx - w / 2, y = cyc - h / 2;
+    var col = ovLocked ? "#9ed47f" : (st.verified === false ? "#e8b34f" : "rgba(255,255,255,.92)");
+    ctx.globalAlpha = st.a;
+    ctx.fillStyle = ovLocked ? "rgba(133,180,110,.13)" : "rgba(255,255,255,.045)";
+    roundRectPath(ctx, x, y, w, h, 10); ctx.fill();
+    // أقواس الزوايا الأربعة بدل إطار كامل
+    var L = Math.min(w, h) * 0.26, r = Math.min(10, L * 0.6);
+    ctx.lineWidth = 3; ctx.lineCap = "round"; ctx.strokeStyle = col;
+    ctx.shadowColor = "rgba(0,0,0,.45)"; ctx.shadowBlur = 4;
+    ctx.beginPath();
+    ctx.moveTo(x, y + L); ctx.arcTo(x, y, x + L, y, r); ctx.lineTo(x + L, y);
+    ctx.moveTo(x + w - L, y); ctx.arcTo(x + w, y, x + w, y + L, r); ctx.lineTo(x + w, y + L);
+    ctx.moveTo(x + w, y + h - L); ctx.arcTo(x + w, y + h, x + w - L, y + h, r); ctx.lineTo(x + w - L, y + h);
+    ctx.moveTo(x + L, y + h); ctx.arcTo(x, y + h, x, y + h - L, r); ctx.lineTo(x, y + h - L);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    // شارة الرقم: دايرة زجاجية فوق منتصف الضلع العلوي (كهرماني = العدّاد البيكسلي لسه مش موافق)
+    var R = 13;
+    ctx.fillStyle = ovLocked ? "rgba(95,146,67,.95)"
+      : (st.verified === false ? "rgba(181,116,42,.92)" : "rgba(12,10,7,.78)");
+    ctx.beginPath(); ctx.arc(cx, y, R, 0, Math.PI * 2); ctx.fill();
+    ctx.lineWidth = 1.5; ctx.strokeStyle = "rgba(255,255,255,.35)";
+    ctx.beginPath(); ctx.arc(cx, y, R, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = "#fff"; ctx.font = "800 14px Tajawal, sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(ar(st.cls), cx, y + 0.5);
+    ctx.globalAlpha = 1;
   }
 
   // نقرّن الأنصاف لأقرب نص تاني عشان نعرضها «5|6» (للعرض بس — المجموع مش محتاج تقرين).
