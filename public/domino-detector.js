@@ -60,7 +60,13 @@
   // Pipeline mirrors the Python validation in ml/ (letterbox → argmax → NMS → map back).
   var ORT_VER = "1.20.1";
   var ORT_BASE = "https://cdn.jsdelivr.net/npm/onnxruntime-web@" + ORT_VER + "/dist/";
-  var IN = 640, NC = 7, CONF_T = 0.25, IOU_T = 0.45;
+  var IN = 640, NC = 7, CONF_T = 0.40, IOU_T = 0.45;
+  // Geometry sanity filters — reject detections that can't be a real domino half.
+  // A half is roughly square; nothing legitimate is bigger than ~half the frame.
+  // These cut most false positives the model hallucinates on busy real backgrounds
+  // (patterned cloth, wood grain) that aren't in the synthetic training set.
+  var MAX_WH = 0.55;          // drop boxes wider/taller than 55% of the frame
+  var AR_MIN = 0.35, AR_MAX = 2.8;  // allowed width/height ratio for a half
 
   function loadOrt() {
     if (window.ort) return Promise.resolve(window.ort);
@@ -150,6 +156,11 @@
           w: (k.w / m.r) / m.sw,
           h: (k.h / m.r) / m.sh
         };
+      }).filter(function (b) {
+        // geometry sanity: drop oversized boxes and non-square shapes (background junk)
+        if (b.w > MAX_WH || b.h > MAX_WH) return false;
+        var ar = b.w / b.h;
+        return ar >= AR_MIN && ar <= AR_MAX;
       });
     }
 
