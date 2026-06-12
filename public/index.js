@@ -1495,7 +1495,8 @@
   }
   var scanLive = false, scanRAF = 0, scanInflight = false, scanLastInfer = 0, scanLocked = false;
   var scanRecent = [];                 // آخر كام قراءة عشان نتأكد إنها ثابتة قبل القفل
-  var SCAN_INTERVAL_MS = 300;          // ~3 لقطات/ثانية — إحساس لايف من غير ما تستهلك البطارية
+  var SCAN_INTERVAL_MS = 80;           // أسرع ما يقدر الجهاز (~12 لقطة/ث) — الرقم يتحدّث لحظياً.
+                                       // single-flight بيمنع التكدّس، فعلياً بيحدّه زمن الاستدلال نفسه.
   var SCAN_STABLE_FRAMES = 3;          // لازم نفس المجموع 3 مرات (~ثانية) قبل القفل
   var SCAN_MIN_CONF = 0.62;            // ثقة أقل من كده = لسه بيدوّر
 
@@ -1822,17 +1823,32 @@
 
   // قناة بث مباشرة لاقتراحات المسح — بتبعت الرقم بس من غير ما تكتب الحالة كلها،
   // عشان نسخة اللاعب القديمة متبوّظش نقاط المتحكم (ده اللي كان بيخلّي السكور يتسجّل مرتين).
-  var scanChannel = null;
-  if (sb) {
-    scanChannel = sb.channel("scan-suggest", { config: { broadcast: { self: false } } });
+  var scanChannel = null, scanChannelJoined = false;
+  function setupScanChannel() {
+    if (!sb) return;
+    if (scanChannel) { try { sb.removeChannel(scanChannel); } catch (e) {} }
+    scanChannelJoined = false;
+    // ack:false = أطلق وانسَ (مانستناش رد السيرفر) عشان الإرسال يطلع أسرع.
+    scanChannel = sb.channel("scan-suggest", { config: { broadcast: { self: false, ack: false } } });
     scanChannel.on("broadcast", { event: "scan" }, function (msg) {
       var p = msg && msg.payload;
       if (!p || typeof p.total !== "number") return;
       if (p.from === myToken) return;   // مش اقتراحي أنا
       if (!amController()) return;      // المتحكم بس اللي يستقبل الاقتراح
       showScanSuggestion(p);
-    }).subscribe();
+    }).subscribe(function (status) {
+      scanChannelJoined = (status === "SUBSCRIBED");
+    });
   }
+  setupScanChannel();
+  // الموبايل بيسيّب الـ websocket يموت لما الشاشة تطفّى أو التطبيق يروح للخلفية،
+  // وأول رسالة بعد ما يصحى بتستنّى إعادة اتصال (أو تضيع، فاللاعب يبعت تاني = "بتتأخّر").
+  // نعيد الاشتراك أول ما الشاشة ترجع قدّام عشان قناة المتحكم تفضل حيّة دايماً.
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && sb && (!scanChannel || scanChannel.state !== "joined")) {
+      setupScanChannel();
+    }
+  });
 
   function showScanSuggestion(p) {
     notifBar.style.display = "flex";
@@ -1877,18 +1893,28 @@
 
   function sendScanSuggestion(total, seatIdx) {
     var seat = state.seats[seatIdx];
-    if (scanChannel) {
-      scanChannel.send({ type: "broadcast", event: "scan", payload: {
-        total: total,
-        seatId: seat ? seat.id : null,
-        seatIdx: seatIdx,
-        name: seat ? nameOf(seat) : "",
-        from: myToken,
-        at: Date.now()
-      } });
+    if (!sb) { toast("المزامنة مقفولة — مش قادر أبعت للمتحكم دلوقتي"); closeScan(); pendingScan = null; return; }
+    var payload = {
+      total: total,
+      seatId: seat ? seat.id : null,
+      seatIdx: seatIdx,
+      name: seat ? nameOf(seat) : "",
+      from: myToken,
+      at: Date.now()
+    };
+    function fire() { scanChannel.send({ type: "broadcast", event: "scan", payload: payload }); }
+    if (scanChannel && scanChannelJoined) {
+      fire();                                   // القناة حيّة → يوصل فوراً
       toast("اتبعت للمتحكم ✓");
     } else {
-      toast("المزامنة مقفولة — مش قادر أبعت للمتحكم دلوقتي");
+      // القناة لسه بتتصل (رجعنا من الخلفية مثلاً) — نجهّزها ونبعت أول ما تجهز،
+      // بدل ما الرسالة تتبعت على قناة ميتة وتضيع.
+      setupScanChannel();
+      var tries = 0, iv = setInterval(function () {
+        if (scanChannelJoined) { fire(); clearInterval(iv); }
+        else if (++tries > 15) { clearInterval(iv); toast("الاتصال ضعيف — جرّب تبعت تاني"); }
+      }, 120);
+      toast("اتبعت للمتحكم ✓");
     }
     closeScan();
     pendingScan = null;
