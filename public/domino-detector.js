@@ -56,11 +56,12 @@
   // ---------- ONNX backend (production) ----------
   // The trained YOLO11n nano model via onnxruntime-web (WebGPU, WASM fallback).
   // Model I/O (verified): input "images" [1,3,640,640] RGB /255; output "output0"
-  // [1, 4+7, 8400] — 4 bbox (cx,cy,w,h in 640px) + 7 class scores (pip count 0..6).
+  // [1, 4+numClasses, 8400] — 4 bbox (cx,cy,w,h in 640px) + class scores. numClasses
+  // is read from the output shape: 7 (pip halves 0..6) or 8 (halves + whole-tile anchor).
   // Pipeline mirrors the Python validation in ml/ (letterbox → argmax → NMS → map back).
   var ORT_VER = "1.20.1";
   var ORT_BASE = "https://cdn.jsdelivr.net/npm/onnxruntime-web@" + ORT_VER + "/dist/";
-  var IN = 640, NC = 7, CONF_T = 0.40, IOU_T = 0.45;
+  var IN = 640, CONF_T = 0.40, IOU_T = 0.45;
   // Geometry sanity filters — reject detections that can't be a real domino half.
   // A half is roughly square; nothing legitimate is bigger than ~half the frame.
   // These cut most false positives the model hallucinates on busy real backgrounds
@@ -125,45 +126,72 @@
       return { tensor: new ortRef.Tensor("float32", f, [1, 3, IN, IN]), r: r, dw: dw, dh: dh, sw: sw, sh: sh };
     }
 
-    // Decode [1, 4+NC, np] -> source-normalised boxes after threshold + NMS.
+    function nms(cands) {
+      cands.sort(function (a, b) { return b.conf - a.conf; });
+      var keep = [];
+      for (var a = 0; a < cands.length; a++) {
+        if (cands[a].rm) continue;
+        keep.push(cands[a]);
+        for (var b = a + 1; b < cands.length; b++) {
+          if (!cands[b].rm && iou(cands[a], cands[b]) > IOU_T) cands[b].rm = true;
+        }
+      }
+      return keep;
+    }
+    function toNorm(k, m) {
+      return {
+        cls: k.cls, conf: k.conf,
+        x: ((k.cx - k.w / 2 - m.dw) / m.r) / m.sw,
+        y: ((k.cy - k.h / 2 - m.dh) / m.r) / m.sh,
+        w: (k.w / m.r) / m.sw,
+        h: (k.h / m.r) / m.sh
+      };
+    }
+    function plausibleHalf(b) {
+      // geometry sanity: drop oversized/undersized boxes and non-square shapes
+      if (b.w > MAX_WH || b.h > MAX_WH) return false;
+      if (b.w < MIN_WH || b.h < MIN_WH) return false;
+      var ar = b.w / b.h;
+      return ar >= AR_MIN && ar <= AR_MAX;
+    }
+
+    // Decode [1, 4+numClasses, np] -> source-normalised pip-half boxes.
+    // numClasses == 7 → pip halves only (original model).
+    // numClasses >= 8 → last class is the whole-tile anchor; we keep only halves
+    //   whose centre falls inside a detected tile, so background pip-lookalikes
+    //   (carpet/wood/skin) can't score — consistent results across any setup.
     function decode(data, dims, m) {
-      var np = dims[2];                      // 8400 anchors; value(c,i) = data[c*np + i]
-      var cand = [];
+      var np = dims[2];                       // anchors; value(c,i) = data[c*np + i]
+      var numClasses = dims[1] - 4;
+      var hasTile = numClasses >= 8;
+      var tileCls = numClasses - 1;
+      var halfCands = [], tileCands = [];
       for (var i = 0; i < np; i++) {
         var best = 0, bestc = 0;
-        for (var c = 0; c < NC; c++) {
+        for (var c = 0; c < numClasses; c++) {
           var sc = data[(4 + c) * np + i];
           if (sc > best) { best = sc; bestc = c; }
         }
         if (best < CONF_T) continue;
         var cx = data[i], cy = data[np + i], w = data[2 * np + i], h = data[3 * np + i];
-        cand.push({ cx: cx, cy: cy, w: w, h: h, cls: bestc, conf: best,
-          x0: cx - w / 2, y0: cy - h / 2, x1: cx + w / 2, y1: cy + h / 2, area: w * h });
+        var box = { cx: cx, cy: cy, w: w, h: h, cls: bestc, conf: best,
+          x0: cx - w / 2, y0: cy - h / 2, x1: cx + w / 2, y1: cy + h / 2, area: w * h };
+        if (hasTile && bestc === tileCls) tileCands.push(box);
+        else if (bestc <= 6) halfCands.push(box);
       }
-      cand.sort(function (a, b) { return b.conf - a.conf; });
-      var keep = [];
-      for (var a = 0; a < cand.length; a++) {
-        if (cand[a].rm) continue;
-        keep.push(cand[a]);
-        for (var b = a + 1; b < cand.length; b++) {
-          if (!cand[b].rm && iou(cand[a], cand[b]) > IOU_T) cand[b].rm = true;
-        }
+
+      var halves = nms(halfCands);
+      if (hasTile) {
+        var tiles = nms(tileCands);
+        halves = halves.filter(function (hb) {
+          return tiles.some(function (t) {
+            var mx = t.w * 0.12, my = t.h * 0.12;   // tolerance for tight tile boxes
+            return hb.cx >= t.x0 - mx && hb.cx <= t.x1 + mx &&
+                   hb.cy >= t.y0 - my && hb.cy <= t.y1 + my;
+          });
+        });
       }
-      return keep.map(function (k) {
-        return {
-          cls: k.cls, conf: k.conf,
-          x: ((k.cx - k.w / 2 - m.dw) / m.r) / m.sw,
-          y: ((k.cy - k.h / 2 - m.dh) / m.r) / m.sh,
-          w: (k.w / m.r) / m.sw,
-          h: (k.h / m.r) / m.sh
-        };
-      }).filter(function (b) {
-        // geometry sanity: drop oversized/undersized boxes and non-square shapes
-        if (b.w > MAX_WH || b.h > MAX_WH) return false;
-        if (b.w < MIN_WH || b.h < MIN_WH) return false;
-        var ar = b.w / b.h;
-        return ar >= AR_MIN && ar <= AR_MAX;
-      });
+      return halves.map(function (k) { return toNorm(k, m); }).filter(plausibleHalf);
     }
 
     return {

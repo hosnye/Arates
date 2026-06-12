@@ -65,6 +65,9 @@ PIP_LAYOUT = {
     6: ["TL", "TR", "ML", "MR", "BL", "BR"],
 }
 
+# Classes 0..6 are pip-half counts; class 7 is the whole tile (the anchor).
+TILE_CLASS = 7
+
 
 def rand_tile_color():
     # Real dominoes are rarely pure white — bias toward the cream/ivory/pale-yellow
@@ -326,6 +329,20 @@ def generate_one(idx, debug=False):
             bh = (by1 - by0) / H
             labels.append((value, cx, cy, bw, bh))
 
+        # whole-tile box (class TILE_CLASS). At inference we keep only pip-halves that
+        # sit INSIDE a detected tile — so the model anchors on the (background-invariant)
+        # tile shape and ignores pip-lookalikes on carpet/wood/skin. This is what makes
+        # results consistent across setups, not just on the surface it was trained on.
+        pad = max(4, int(side * 0.12))
+        tile_rect = (pad, pad, layer.width - pad, layer.height - pad)
+        tx0, ty0, tx1, ty1 = rotated_bbox(tile_rect, layer.width, layer.height, angle, RW, RH)
+        tx0, ty0, tx1, ty1 = tx0 + px, ty0 + py, tx1 + px, ty1 + py
+        tx0, ty0 = max(0, tx0), max(0, ty0)
+        tx1, ty1 = min(W, tx1), min(H, ty1)
+        if tx1 - tx0 >= 8 and ty1 - ty0 >= 8:
+            labels.append((TILE_CLASS, (tx0 + tx1) / 2 / W, (ty0 + ty1) / 2 / H,
+                           (tx1 - tx0) / W, (ty1 - ty0) / H))
+
     img = canvas.convert("RGB")
     if n_tiles and random.random() < 0.45:
         add_fingers(img, random.randint(1, 2))
@@ -376,6 +393,7 @@ def main():
         f.write("names:\n")
         for v in range(7):
             f.write(f"  {v}: '{v}'\n")
+        f.write(f"  {TILE_CLASS}: 'tile'\n")
     print(f"Done. {args.num} images -> {args.out}\n  data.yaml: {data_yaml}")
 
 
