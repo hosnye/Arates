@@ -1479,6 +1479,8 @@
   var scanLiveTotal = document.getElementById("scanLiveTotal");
   var scanLiveNum = document.getElementById("scanLiveNum");
   var scanStream = null;
+  var scanTorchOn = false;
+  var scanTorchBtn = document.getElementById("scanTorch");
   var pendingScan = null;
 
   // محرّك الكشف اللحظي (موديل على الجهاز): بيشتغل لايف ويقفل القراءة لمّا تثبت.
@@ -1552,14 +1554,39 @@
   function startCamera() {
     if (scanStream) return;
     navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } } })
-      .then(function (stream) { scanStream = stream; scanVideo.srcObject = stream; })
+      .then(function (stream) {
+        scanStream = stream;
+        scanVideo.srcObject = stream;
+        scanTorchBtn.style.display = "";
+      })
       .catch(function () { toast("مش قادر يفتح الكاميرا — تأكد إنك ديت الإذن"); closeScan(); });
   }
 
+  function setTorch(on) {
+    if (!scanStream) return;
+    var track = scanStream.getVideoTracks()[0];
+    if (!track) return;
+    track.applyConstraints({ advanced: [{ torch: on }] })
+      .then(function () {
+        scanTorchOn = on;
+        scanTorchBtn.classList.toggle("torch-on", on);
+      })
+      .catch(function () {
+        scanTorchBtn.style.display = "none";
+        toast("الفلاش مش متاح على الجهاز ده");
+      });
+  }
+
+  scanTorchBtn.addEventListener("click", function () { setTorch(!scanTorchOn); });
+
   function closeScan() {
     stopScanLoop();
+    if (scanTorchOn) { setTorch(false); }
     if (scanStream) { scanStream.getTracks().forEach(function (t) { t.stop(); }); scanStream = null; }
     scanVideo.srcObject = null;
+    scanTorchOn = false;
+    scanTorchBtn.classList.remove("torch-on");
+    scanTorchBtn.style.display = "none";
     scanBg.classList.remove("show");
     scanShutter.classList.remove("scan-processing");
   }

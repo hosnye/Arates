@@ -473,6 +473,8 @@
   .scan-shell { width:100%; height:100%; max-width:480px; display:flex; flex-direction:column; align-items:center; padding:max(env(safe-area-inset-top),18px) 0 max(env(safe-area-inset-bottom),24px); }
   .scan-header { width:100%; display:flex; align-items:center; justify-content:space-between; padding:0 18px 14px; }
   .scan-close { background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.15); color:var(--text); font-size:16px; font-weight:700; width:36px; height:36px; border-radius:50%; cursor:pointer; display:grid; place-items:center; }
+  .scan-torch { background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.15); color:var(--text); font-size:17px; width:36px; height:36px; border-radius:50%; cursor:pointer; display:grid; place-items:center; transition:background .2s, border-color .2s, box-shadow .2s; }
+  .scan-torch.torch-on { background:rgba(255,230,80,.22); border-color:rgba(255,220,50,.7); box-shadow:0 0 10px 2px rgba(255,220,50,.35); }
   .scan-title { font-size:16px; font-weight:800; }
   .scan-viewfinder { flex:1; width:100%; position:relative; overflow:hidden; }
   #scanVideo { width:100%; height:100%; object-fit:cover; }
@@ -619,7 +621,7 @@
     <div class="scan-header">
       <button class="scan-close" id="scanClose">✕</button>
       <span class="scan-title">حساب نقاط القطع</span>
-      <div style="width:36px"></div>
+      <button class="scan-torch" id="scanTorch" style="display:none">🔦</button>
     </div>
     <div class="scan-viewfinder">
       <video id="scanVideo" autoplay playsinline muted></video>
