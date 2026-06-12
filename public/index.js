@@ -1557,10 +1557,7 @@
       .then(function (stream) {
         scanStream = stream;
         scanVideo.srcObject = stream;
-        var track = stream.getVideoTracks()[0];
-        var caps = track && track.getCapabilities ? track.getCapabilities() : {};
-        if (caps.torch) { scanTorchBtn.style.display = ""; }
-        else { scanTorchBtn.style.display = "none"; }
+        scanTorchBtn.style.display = "";
       })
       .catch(function () { toast("مش قادر يفتح الكاميرا — تأكد إنك ديت الإذن"); closeScan(); });
   }
@@ -1574,7 +1571,10 @@
         scanTorchOn = on;
         scanTorchBtn.classList.toggle("torch-on", on);
       })
-      .catch(function () { toast("الفلاش مش متاح على الجهاز ده"); });
+      .catch(function () {
+        scanTorchBtn.style.display = "none";
+        toast("الفلاش مش متاح على الجهاز ده");
+      });
   }
 
   scanTorchBtn.addEventListener("click", function () { setTorch(!scanTorchOn); });
