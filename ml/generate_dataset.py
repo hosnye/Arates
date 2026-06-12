@@ -253,7 +253,7 @@ def add_fingers(img, n):
             d.rounded_rectangle([x, -40, x + fw, y1], radius=fw // 2, fill=skin)
 
 
-def augment(img):
+def augment(img, max_blur=2.0):
     if random.random() < 0.85:
         # down to 0.45 — evening indoor shots are much dimmer than clean renders
         img = ImageEnhance.Brightness(img).enhance(random.uniform(0.45, 1.25))
@@ -266,18 +266,28 @@ def augment(img):
         warm = Image.new("RGB", img.size, (255, 180, 90))
         img = Image.blend(img, warm, random.uniform(0.04, 0.16))
     if random.random() < 0.5:
-        img = img.filter(ImageFilter.GaussianBlur(random.uniform(0.4, 2.0)))
+        img = img.filter(ImageFilter.GaussianBlur(random.uniform(0.4, max_blur)))
     return img
 
 
 def generate_one(idx, debug=False):
     W = random.randint(640, 1024)
     H = random.randint(512, 1024)
-    canvas = make_background(W, H).convert("RGBA")
     labels = []  # (cls, cx, cy, bw, bh) normalised
 
     # ~12% pure negatives: background only — the model must learn to output nothing.
     n_tiles = 0 if random.random() < 0.12 else random.randint(1, 7)
+
+    # Depth-of-field: phone cameras focus on the tiles and throw the background out of
+    # focus. We blur the background BEFORE compositing the (sharp) tiles for ~55% of
+    # images, so the model learns "sharp tile-shape vs soft background" as an EXTRA cue.
+    # The other ~45% keep a sharp background (flat-on-table / wide shots) so the model
+    # never *depends* on blur — it just uses it when it's there.
+    bg = make_background(W, H)
+    dof = n_tiles > 0 and random.random() < 0.55
+    if dof:
+        bg = bg.filter(ImageFilter.GaussianBlur(random.uniform(1.8, 5.0)))
+    canvas = bg.convert("RGBA")
 
     # Half the multi-tile images lay the tiles touching in a row like a real hand.
     row_layout = n_tiles >= 2 and random.random() < 0.5
@@ -346,7 +356,9 @@ def generate_one(idx, debug=False):
     img = canvas.convert("RGB")
     if n_tiles and random.random() < 0.45:
         add_fingers(img, random.randint(1, 2))
-    img = augment(img)
+    # When the background is already DoF-blurred, keep the global blur tiny so the
+    # tiles stay crisp (preserving the sharp-subject / soft-background contrast).
+    img = augment(img, max_blur=0.7 if dof else 2.0)
 
     if debug:
         dd = ImageDraw.Draw(img)
