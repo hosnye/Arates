@@ -70,6 +70,77 @@
   var MIN_WH = 0.035;         // ...or tinier than a plausible half (edge junk)
   var AR_MIN = 0.35, AR_MAX = 2.8;  // allowed width/height ratio for a half
 
+  // ---------- Independent count verifier ----------
+  // The neural net can misread neighbouring counts (3 vs 5) when its box drifts
+  // across the divider. Pips are just dark round blobs on a bright tile, so we
+  // re-count them with plain pixel analysis on each claimed half and require the
+  // two independent counters to AGREE before the app may lock a reading.
+  var VS = 56;                                // verifier crop resolution
+  var vCanvas = null, vCtx = null;
+  function blobCount(src, b) {
+    // returns the number of pip-like dark blobs in box b, or -1 if unverifiable
+    if (!vCanvas) {
+      vCanvas = document.createElement("canvas");
+      vCanvas.width = VS; vCanvas.height = VS;
+      vCtx = vCanvas.getContext("2d", { willReadFrequently: true });
+    }
+    // inner 80% of the half — skips the divider bar / tile edge at the borders
+    var sx = (b.x + b.w * 0.10) * src.width, sy = (b.y + b.h * 0.10) * src.height;
+    var sw = b.w * 0.80 * src.width, sh = b.h * 0.80 * src.height;
+    if (sw < 8 || sh < 8) return -1;
+    try {
+      vCtx.drawImage(src, sx, sy, sw, sh, 0, 0, VS, VS);
+      var d = vCtx.getImageData(0, 0, VS, VS).data;
+    } catch (e) { return -1; }
+    var n = VS * VS, lum = new Float32Array(n), mean = 0;
+    for (var i = 0; i < n; i++) {
+      var l = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+      lum[i] = l; mean += l;
+    }
+    mean /= n;
+    var sd = 0;
+    for (i = 0; i < n; i++) { var df = lum[i] - mean; sd += df * df; }
+    sd = Math.sqrt(sd / n);
+    // dark = clearly below the tile face. On a blank half sd is tiny and the
+    // max(20, …) floor means nothing qualifies → returns 0, as it should.
+    var thr = mean - Math.max(20, 0.9 * sd);
+    var mark = new Uint8Array(n), any = 0;
+    for (i = 0; i < n; i++) if (lum[i] < thr) { mark[i] = 1; any++; }
+    if (!any) return 0;
+    // connected components; keep only round-ish, pip-sized ones
+    var label = new Int32Array(n), comps = 0, count = 0, stack = [];
+    var minA = n * 0.006, maxA = n * 0.16;
+    for (i = 0; i < n; i++) {
+      if (!mark[i] || label[i]) continue;
+      comps++;
+      var area = 0, minx = VS, maxx = 0, miny = VS, maxy = 0;
+      stack.length = 0; stack.push(i); label[i] = comps;
+      while (stack.length) {
+        var p = stack.pop(); area++;
+        var px = p % VS, py = (p / VS) | 0;
+        if (px < minx) minx = px; if (px > maxx) maxx = px;
+        if (py < miny) miny = py; if (py > maxy) maxy = py;
+        if (px > 0 && mark[p - 1] && !label[p - 1]) { label[p - 1] = comps; stack.push(p - 1); }
+        if (px < VS - 1 && mark[p + 1] && !label[p + 1]) { label[p + 1] = comps; stack.push(p + 1); }
+        if (py > 0 && mark[p - VS] && !label[p - VS]) { label[p - VS] = comps; stack.push(p - VS); }
+        if (py < VS - 1 && mark[p + VS] && !label[p + VS]) { label[p + VS] = comps; stack.push(p + VS); }
+      }
+      if (area < minA || area > maxA) continue;
+      var bw = maxx - minx + 1, bh = maxy - miny + 1, ar = bw / bh;
+      if (ar < 0.45 || ar > 2.2) continue;
+      if (area / (bw * bh) < 0.5) continue;       // pips are filled circles
+      count++;
+    }
+    return count > 6 ? -1 : count;                // >6 blobs = garbage crop
+  }
+  function annotateVerification(src, boxes) {
+    for (var i = 0; i < boxes.length; i++) {
+      var nb = blobCount(src, boxes[i]);
+      boxes[i].blob = nb < 0 ? null : nb;
+      boxes[i].verified = nb < 0 ? null : (nb === boxes[i].cls);
+    }
+  }
+
   function loadOrt() {
     if (window.ort) return Promise.resolve(window.ort);
     return new Promise(function (resolve, reject) {
@@ -209,6 +280,9 @@
           var out = res[outputName] || res[Object.keys(res)[0]];
           var dec = decode(out.data, out.dims, m);
           var boxes = dec.boxes;
+          // second opinion: re-count each half's pips with pixel analysis;
+          // sets b.blob (count) and b.verified (blob === cls) per box.
+          annotateVerification(src, boxes);
           var total = boxes.reduce(function (s, b) { return s + b.cls; }, 0);
           var conf = boxes.length ? boxes.reduce(function (s, b) { return s + b.conf; }, 0) / boxes.length : 0;
           // tiles: null for the legacy 7-class model; [] / boxes for the 8-class one.
@@ -223,6 +297,8 @@
   }
 
   window.DominoDetector = {
+    // debug/tuning hook for the independent pip counter (used by tests)
+    _blobCount: blobCount,
     /**
      * create({ backend }) — "onnx" | "mock" | "auto" (default).
      * "auto" tries ONNX and falls back to mock so the UI always works.

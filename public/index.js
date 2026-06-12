@@ -1619,19 +1619,27 @@
       }
     }
 
+    // عدّاد تاني مستقل: بنعدّ النقط الغامقة في كل نص بتحليل البيكسلات نفسها،
+    // والقفل مايتمّش غير لما العدّادين يتفقوا على كل نص (يمنع غلطات زي ٣ تتقري ٥).
+    var allVerified = boxes.every(function (b) { return b.verified !== false; });
+    if (complete && !allVerified) {
+      scanHint.textContent = "بيتأكد من عدّ النقط — ثبّت أو قرّب شوية";
+    }
+
     drawScanOverlay(boxes, false);
     scanLiveTotal.style.display = "block";
     scanLiveNum.textContent = ar(total);
 
     // ثبات: نفس المجموع SCAN_STABLE_FRAMES مرات متتالية + ثقة كفاية + مجموع > 0
-    scanRecent.push({ total: total, conf: conf, complete: complete });
+    scanRecent.push({ total: total, conf: conf, complete: complete, verified: allVerified });
     if (scanRecent.length > SCAN_STABLE_FRAMES) scanRecent.shift();
     if (scanRecent.length === SCAN_STABLE_FRAMES) {
       var first = scanRecent[0].total;
       var allSame = scanRecent.every(function (r) { return r.total === first; });
       var allComplete = scanRecent.every(function (r) { return r.complete; });
+      var allOk = scanRecent.every(function (r) { return r.verified; });
       var meanConf = scanRecent.reduce(function (s, r) { return s + r.conf; }, 0) / scanRecent.length;
-      if (allSame && allComplete && first > 0 && meanConf >= SCAN_MIN_CONF) lockScanReading({ boxes: boxes, total: total, conf: conf });
+      if (allSame && allComplete && allOk && first > 0 && meanConf >= SCAN_MIN_CONF) lockScanReading({ boxes: boxes, total: total, conf: conf });
     }
   }
 
@@ -1671,7 +1679,8 @@
       var label = ar(b.cls);
       ctx.font = "800 15px Tajawal, sans-serif";
       var tw = ctx.measureText(label).width + 12;
-      ctx.fillStyle = locked ? "#5f9243" : "rgba(0,0,0,.7)";
+      // كهرماني = العدّاد البيكسلي لسه مش موافق على الرقم ده
+      ctx.fillStyle = locked ? "#5f9243" : (b.verified === false ? "#b5742a" : "rgba(0,0,0,.7)");
       roundRectPath(ctx, x, y - 21, tw, 19, 6); ctx.fill();
       ctx.fillStyle = "#fff"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
       ctx.fillText(label, x + 6, y - 11);
