@@ -1608,18 +1608,30 @@
     var total = boxes.reduce(function (s, b) { return s + b.cls; }, 0);
     var conf = boxes.length ? boxes.reduce(function (s, b) { return s + b.conf; }, 0) / boxes.length : 0;
 
+    // اكتمال القراءة: الموديل الجديد بيكشف القطعة كلها كمان (مش بس الأنصاص).
+    // كل قطعة لازم يبان فيها نصّين بالظبط قبل ما نقفل — عشان مانقفلش على قراءة
+    // ناقصة (زي ما كان بيحصل لما نص يتفوّت). الموديل القديم (tiles=null) بيعدي.
+    var complete = true;
+    if (res.tiles) {
+      complete = res.tiles.length > 0 && boxes.length === res.tiles.length * 2;
+      if (!complete && res.tiles.length > 0) {
+        scanHint.textContent = "في نص قطعة مش باين — عدّل الزاوية شوية";
+      }
+    }
+
     drawScanOverlay(boxes, false);
     scanLiveTotal.style.display = "block";
     scanLiveNum.textContent = ar(total);
 
     // ثبات: نفس المجموع SCAN_STABLE_FRAMES مرات متتالية + ثقة كفاية + مجموع > 0
-    scanRecent.push({ total: total, conf: conf });
+    scanRecent.push({ total: total, conf: conf, complete: complete });
     if (scanRecent.length > SCAN_STABLE_FRAMES) scanRecent.shift();
     if (scanRecent.length === SCAN_STABLE_FRAMES) {
       var first = scanRecent[0].total;
       var allSame = scanRecent.every(function (r) { return r.total === first; });
+      var allComplete = scanRecent.every(function (r) { return r.complete; });
       var meanConf = scanRecent.reduce(function (s, r) { return s + r.conf; }, 0) / scanRecent.length;
-      if (allSame && first > 0 && meanConf >= SCAN_MIN_CONF) lockScanReading({ boxes: boxes, total: total, conf: conf });
+      if (allSame && allComplete && first > 0 && meanConf >= SCAN_MIN_CONF) lockScanReading({ boxes: boxes, total: total, conf: conf });
     }
   }
 

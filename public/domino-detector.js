@@ -48,7 +48,7 @@
         });
         var total = boxes.reduce(function (s, b) { return s + b.cls; }, 0);
         var conf = boxes.length ? boxes.reduce(function (s, b) { return s + b.conf; }, 0) / boxes.length : 0;
-        return Promise.resolve({ boxes: boxes, total: total, conf: conf });
+        return Promise.resolve({ boxes: boxes, total: total, conf: conf, tiles: null });
       }
     };
   }
@@ -181,8 +181,8 @@
       }
 
       var halves = nms(halfCands);
-      if (hasTile) {
-        var tiles = nms(tileCands);
+      var tiles = hasTile ? nms(tileCands) : null;
+      if (tiles) {
         halves = halves.filter(function (hb) {
           return tiles.some(function (t) {
             var mx = t.w * 0.12, my = t.h * 0.12;   // tolerance for tight tile boxes
@@ -191,26 +191,32 @@
           });
         });
       }
-      return halves.map(function (k) { return toNorm(k, m); }).filter(plausibleHalf);
+      return {
+        boxes: halves.map(function (k) { return toNorm(k, m); }).filter(plausibleHalf),
+        tiles: tiles ? tiles.map(function (k) { return toNorm(k, m); }) : null
+      };
     }
 
     return {
       backend: "onnx",
       ready: ready,
       detect: function (src) {
-        if (!session || !src) return Promise.resolve({ boxes: [], total: 0, conf: 0 });
+        if (!session || !src) return Promise.resolve({ boxes: [], total: 0, conf: 0, tiles: null });
         var m;
-        try { m = preprocess(src); } catch (e) { return Promise.resolve({ boxes: [], total: 0, conf: 0 }); }
+        try { m = preprocess(src); } catch (e) { return Promise.resolve({ boxes: [], total: 0, conf: 0, tiles: null }); }
         var feeds = {}; feeds[inputName] = m.tensor;
         return session.run(feeds).then(function (res) {
           var out = res[outputName] || res[Object.keys(res)[0]];
-          var boxes = decode(out.data, out.dims, m);
+          var dec = decode(out.data, out.dims, m);
+          var boxes = dec.boxes;
           var total = boxes.reduce(function (s, b) { return s + b.cls; }, 0);
           var conf = boxes.length ? boxes.reduce(function (s, b) { return s + b.conf; }, 0) / boxes.length : 0;
-          return { boxes: boxes, total: total, conf: conf };
+          // tiles: null for the legacy 7-class model; [] / boxes for the 8-class one.
+          // The app uses it to refuse locking until every tile shows exactly 2 halves.
+          return { boxes: boxes, total: total, conf: conf, tiles: dec.tiles };
         }).catch(function (e) {
           console.warn("[DominoDetector] inference error", e);
-          return { boxes: [], total: 0, conf: 0 };
+          return { boxes: [], total: 0, conf: 0, tiles: null };
         });
       }
     };

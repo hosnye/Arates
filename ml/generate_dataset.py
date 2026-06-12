@@ -70,15 +70,22 @@ TILE_CLASS = 7
 
 
 def rand_tile_color():
-    # Real dominoes are rarely pure white — bias toward the cream/ivory/pale-yellow
-    # tiles the scanner actually gets pointed at.
-    if random.random() < 0.25:                       # white-ish minority
+    # Real dominoes span white → cream/ivory → saturated greenish-yellow (cheap
+    # plastic sets, like the user's). Cover the whole range.
+    roll = random.random()
+    if roll < 0.20:                                  # white-ish
         base = random.randint(230, 255)
         return (base, base - random.randint(0, 10), base - random.randint(0, 18))
-    r = random.randint(222, 248)
-    g = r - random.randint(4, 18)
-    b = g - random.randint(20, 70)
-    return (r, g, max(130, b))
+    if roll < 0.55:                                  # cream / ivory
+        r = random.randint(222, 248)
+        g = r - random.randint(4, 18)
+        b = g - random.randint(20, 70)
+        return (r, g, max(130, b))
+    # saturated yellow / greenish-yellow (g can exceed r)
+    g = random.randint(215, 245)
+    r = g - random.randint(0, 22)
+    b = random.randint(85, 150)
+    return (r, g, b)
 
 
 def draw_half(draw, ox, oy, side, value, pip_color):
@@ -109,24 +116,43 @@ def render_tile(side, left, right, horizontal):
     d.rounded_rectangle([pad, pad, pad + w, pad + h], radius=radius,
                         fill=tile_col, outline=(60, 60, 60), width=max(1, side // 60))
 
-    line_col = (90, 90, 90)
+    # Divider ranges from a thin engraved line to the thick black bar of plastic
+    # sets; many tiles also have a metal "spinner" pin at the centre — a shiny
+    # pip-lookalike the model must learn is NOT a pip.
+    if random.random() < 0.5:
+        line_col = (90, 90, 90)
+        bar = max(2, side // 40)
+    else:
+        shade_l = random.randint(15, 45)
+        line_col = (shade_l, shade_l, shade_l)
+        bar = max(3, int(side * random.uniform(0.045, 0.09)))
     # Pips on real tiles range from pure black to dark navy.
     shade = random.randint(10, 40)
     pip_col = (shade, shade, shade + random.randint(0, 25))
     if horizontal:
         mx = pad + side
-        d.line([mx, pad + side * 0.12, mx, pad + side * 0.88], fill=line_col, width=max(2, side // 40))
+        d.line([mx, pad + side * 0.08, mx, pad + side * 0.92], fill=line_col, width=bar)
+        pin_c = (mx, pad + side / 2)
         halves = [
             (left, (pad, pad, pad + side, pad + side)),
             (right, (pad + side, pad, pad + 2 * side, pad + side)),
         ]
     else:
         my = pad + side
-        d.line([pad + side * 0.12, my, pad + side * 0.88, my], fill=line_col, width=max(2, side // 40))
+        d.line([pad + side * 0.08, my, pad + side * 0.92, my], fill=line_col, width=bar)
+        pin_c = (pad + side / 2, my)
         halves = [
             (left, (pad, pad, pad + side, pad + side)),
             (right, (pad, pad + side, pad + side, pad + 2 * side)),
         ]
+    if random.random() < 0.6:
+        pr = max(2, int(side * random.uniform(0.035, 0.055)))
+        metal = random.randint(140, 195)
+        d.ellipse([pin_c[0] - pr, pin_c[1] - pr, pin_c[0] + pr, pin_c[1] + pr],
+                  fill=(metal, metal, metal + random.randint(0, 12)))
+        hr = max(1, pr // 2)   # specular highlight
+        d.ellipse([pin_c[0] - hr, pin_c[1] - hr, pin_c[0] + hr // 2 + 1, pin_c[1] + hr // 2 + 1],
+                  fill=(235, 235, 238))
 
     for value, (x0, y0, x1, y1) in halves:
         draw_half(d, x0, y0, side, value, pip_col)
