@@ -1,7 +1,7 @@
 # Render Blueprint — free hosting for the Tarabish app.
 # Deploy: push this repo to GitHub, then on https://render.com
 #   New + → Blueprint → pick this repo. Render reads this file automatically.
-# After the first deploy, set GEMINI_API_KEY in the service's Environment tab.
+# No secrets required — scanning runs on-device in the browser (no server-side AI).
 services:
   - type: web
     name: tarabish
@@ -14,5 +14,3 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: GEMINI_API_KEY  # set the real value in the Render dashboard (kept secret)
-        sync: false

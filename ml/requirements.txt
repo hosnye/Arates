@@ -1,0 +1,8 @@
+# Dataset generation (lightweight)
+pillow>=10.0
+numpy>=1.24
+
+# Training + ONNX export (install when you train; pulls in torch)
+# ultralytics>=8.3
+# onnx>=1.16
+# onnxruntime>=1.18

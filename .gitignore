@@ -6,3 +6,15 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# ML — generated datasets / training runs (don't commit; regenerate from the script)
+ml/dataset/
+ml/preview/
+runs/
+*.onnx
+# the shipped model MUST be committed so Render serves it
+!public/models/*.onnx
+__pycache__/
+
+# Local Claude Code settings
+.claude/settings.local.json

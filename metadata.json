@@ -1,6 +1,5 @@
 {
   "name": "Tarabish Domino Tracker & AI Scanner",
   "description": "A scoring and high-score companion for the Tarabish dominoes game, featuring an AI-powered camera scanner to count tiles and calculate scores in real-time.",
-  "requestFramePermissions": ["camera"],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "requestFramePermissions": ["camera"]
 }

@@ -54,14 +54,11 @@
   // كاش لأغراض الأنميشن (نقارن بيه التغييرات)
   var prevScores = [], prevDone = [], prevKingIdx = -1, prevDangerIdx = -1, animateIn = false;
   function flashClass(el, cls, ms) {
-    if (!el) return;
-    el.classList.remove(cls); void el.offsetWidth; el.add ? el.classList.add(cls) : null;
-    if (el.classList) {
-      el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls);
-      setTimeout(function () { el.classList.remove(cls); }, ms || 450);
-    }
+    if (!el || !el.classList) return;
+    el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls);
+    setTimeout(function () { el.classList.remove(cls); }, ms || 450);
   }
-  var undoBtn = { classList: { add: function () {}, remove: function () {} } };
+  var undoBtn = document.getElementById("undoBtn");
 
   function vibrate(ms) { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) {} }
   function persist() { store.save(state); pushRemote(); }
@@ -78,8 +75,27 @@
   function snapshot() {
     history.push(JSON.stringify(state));
     if (history.length > 60) history.shift();
-    undoBtn.classList.remove("disabled");
+    refreshUndo();
   }
+
+  // زرار التراجع شغّال للمتحكم بس ولمّا يكون فيه خطوة نقدر نرجّعها.
+  function refreshUndo() {
+    if (!undoBtn) return;
+    undoBtn.classList.toggle("disabled", !history.length || !amController());
+  }
+  function doUndo() {
+    if (!amController()) { guardEdit(); return; }
+    if (!history.length) return;
+    var prev = history.pop();
+    try { state = JSON.parse(prev); } catch (e) { return; }
+    store.save(state);
+    vibrate(15);
+    render();          // يعيد الرسم بالحالة القديمة
+    pushRemote();      // يزامن الرجوع لباقي الأجهزة
+    refreshUndo();
+    toast("رجّعت آخر خطوة ↩️");
+  }
+  if (undoBtn) undoBtn.addEventListener("click", doUndo);
 
   // الكنج = أقل رقم لو واحد بس
   function kingSeat() {
@@ -373,7 +389,27 @@
   var kpPrev = document.getElementById("kpPreview");
   var kpTitle = document.getElementById("kpTitle");
   var kpOk = document.getElementById("kpOk");
+  var kpSwitch = document.getElementById("kpSwitch");
   var kpVal = "", kpTarget = -1, kpMode = "add";
+
+  // يبيّن زرار التبديل «زيادة ⇄ تصحيح» حسب الوضع الحالي (مخفي في كود التحكم/الهدف).
+  function syncKpSwitch() {
+    if (!kpSwitch) return;
+    if (kpMode === "add") { kpSwitch.style.display = "block"; kpSwitch.textContent = "✏️ صحّح السكور بدل ما تزوّد"; }
+    else if (kpMode === "set") { kpSwitch.style.display = "block"; kpSwitch.textContent = "➕ زوّد نقط بدل ما تصحّح"; }
+    else { kpSwitch.style.display = "none"; }
+  }
+  if (kpSwitch) kpSwitch.addEventListener("click", function () {
+    if (kpMode === "add") kpMode = "set";
+    else if (kpMode === "set") kpMode = "add";
+    else return;
+    kpVal = "";
+    var nm = escapeHtml(nameOf(state.seats[kpTarget]));
+    kpTitle.innerHTML = (kpMode === "add" ? "زود نقط لـ <b>" : "صحّح سكور <b>") + nm + "</b>";
+    syncKpSwitch();
+    refreshKp();
+    vibrate(6);
+  });
 
   function openKeypad(i, mode) {
     if (mode !== "code" && state.over) return;
@@ -382,6 +418,7 @@
     else if (mode === "set") kpTitle.innerHTML = 'صحّح سكور <b>' + escapeHtml(nameOf(state.seats[i])) + '</b>';
     else if (mode === "code") kpTitle.innerHTML = 'اكتب <b>كود التحكم</b>';
     else kpTitle.innerHTML = 'غيّر الهدف';
+    syncKpSwitch();
     refreshKp();
     kpBg.classList.add("show");
   }
@@ -1163,6 +1200,7 @@
       modeBtn.textContent = "🔓 دخول التحكم";
       modeBtn.classList.remove("disabled");
     }
+    refreshUndo();
   }
 
   function tryTakeControl(code) {
@@ -1420,8 +1458,10 @@
         }).subscribe();
     } catch (e) {}
 
-    setInterval(function () { loadRemote(function (r) { applyRemote(r); }); }, 2500);
-    setInterval(function () { if (amController()) pushRemote(); }, 12000);
+    // الـ realtime channel بيغطّي التحديثات الحيّة؛ ده مجرد احتياطي.
+    // نوقفه وقت ما التطبيق في الخلفية عشان نوفّر بطارية كل اللاعبين وكوتة Supabase.
+    setInterval(function () { if (!document.hidden) loadRemote(function (r) { applyRemote(r); }); }, 2500);
+    setInterval(function () { if (amController()) pushRemote(); }, 12000);   // نبضة قفل التحكم — تفضل شغّالة عشان متفقدش التحكم وانت مفتح
   }
 
   render();
@@ -1435,56 +1475,51 @@
   var scanResult = document.getElementById("scanResult");
   var scanHint = document.getElementById("scanHint");
   var notifBar = document.getElementById("notifBar");
+  var scanOverlay = document.getElementById("scanOverlay");
+  var scanLiveTotal = document.getElementById("scanLiveTotal");
+  var scanLiveNum = document.getElementById("scanLiveNum");
   var scanStream = null;
   var pendingScan = null;
 
-  // وضع المسح: «سريع» (موديل lite، أسرع ودقة أقل) أو «دقيق» (الموديل الأقوى). متخزّن على الجهاز.
-  var SCAN_MODE_KEY = "qahwa_scan_mode";
-  var scanMode = (function () { try { return localStorage.getItem(SCAN_MODE_KEY) || "accurate"; } catch (e) { return "accurate"; } })();
-  var scanModeToggle = null;
-  function syncScanModeToggle() {
-    if (!scanModeToggle) return;
-    scanModeToggle.querySelectorAll("button").forEach(function (b) {
-      var on = b.dataset.m === scanMode;
-      b.style.background = on ? "var(--gold)" : "transparent";
-      b.style.color = on ? "#171009" : "rgba(255,255,255,.75)";
-    });
-  }
-  function buildScanModeToggle() {
-    if (scanModeToggle) { syncScanModeToggle(); return; }
-    var wrap = document.createElement("div");
-    wrap.id = "scanModeToggle";
-    wrap.style.cssText = "position:absolute;top:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:4px;z-index:6";
-    wrap.innerHTML =
-      '<button data-m="fast" style="border:0;border-radius:999px;padding:7px 14px;font-family:inherit;font-weight:800;font-size:13px;cursor:pointer">⚡ سريع</button>' +
-      '<button data-m="accurate" style="border:0;border-radius:999px;padding:7px 14px;font-family:inherit;font-weight:800;font-size:13px;cursor:pointer">🎯 دقيق</button>';
-    var vf = scanBg.querySelector(".scan-viewfinder") || scanBg.querySelector(".scan-shell") || scanBg;
-    vf.appendChild(wrap);
-    wrap.querySelectorAll("button").forEach(function (b) {
-      b.addEventListener("click", function (e) {
-        e.stopPropagation();
-        scanMode = b.dataset.m;
-        try { localStorage.setItem(SCAN_MODE_KEY, scanMode); } catch (err) {}
-        syncScanModeToggle();
-        vibrate(8);
-        toast(scanMode === "fast" ? "وضع سريع ⚡ (أسرع · دقة أقل)" : "وضع دقيق 🎯 (أبطأ شوية · أدق)");
-      });
-    });
-    scanModeToggle = wrap;
-    syncScanModeToggle();
-  }
+  // محرّك الكشف اللحظي (موديل على الجهاز): بيشتغل لايف ويقفل القراءة لمّا تثبت.
+  var detector = null;
+  var scanLive = false, scanRAF = 0, scanInflight = false, scanLastInfer = 0, scanLocked = false;
+  var scanRecent = [];                 // آخر كام قراءة عشان نتأكد إنها ثابتة قبل القفل
+  var SCAN_INTERVAL_MS = 300;          // ~3 لقطات/ثانية — إحساس لايف من غير ما تستهلك البطارية
+  var SCAN_STABLE_FRAMES = 3;          // لازم نفس المجموع 3 مرات (~ثانية) قبل القفل
+  var SCAN_MIN_CONF = 0.62;            // ثقة أقل من كده = لسه بيدوّر
 
   document.getElementById("scanBtn").addEventListener("click", openScan);
 
+  // السيرفر المجاني على Render بينام بعد ~15 دقيقة، وأول طلب بياخد ~30 ثانية يصحى.
+  // بنبعتله نبضة خفيفة بدري — أول ما التطبيق يفتح، ولمّا يرجع للواجهة، ولمّا الكاميرا تتفتح —
+  // عشان يبقى صاحي قبل ما اللاعب يضغط يصوّر، فالنتيجة تطلع على طول.
+  var lastWarm = 0;
+  function warmServer() {
+    var now = Date.now();
+    if (now - lastWarm < 60000) return; // مرة كل دقيقة على الأكثر
+    lastWarm = now;
+    try { fetch("/api/warmup", { method: "GET", cache: "no-store" }).catch(function () {}); } catch (e) {}
+  }
+  warmServer();
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") warmServer();
+  });
+
   function openScan() {
+    if (!detector) detector = window.DominoDetector.create();   // العدّاد بيشتغل على الجهاز
+    warmServer();                                               // نخلّي السيرفر صاحي عشان تحميل الموديل والصفحة يبقى سريع
     scanResult.style.display = "none";
-    scanShutter.style.display = "grid";
-    scanHint.textContent = "صوّر قطع الدومينو اللي في إيدك";
-    buildScanModeToggle();
-    if (scanModeToggle) scanModeToggle.style.display = "flex";
+    scanShutter.style.display = "none";                         // مفيش زرار تصوير — القفل تلقائي
+    scanLiveTotal.style.display = "none";
+    scanLiveTotal.classList.remove("locked");
+    scanHint.textContent = detector.backend === "mock"
+      ? "🧪 نتايج تجريبية — وجّه على القطع"
+      : "وجّه الكاميرا على القطع وثبّت شوية";
     scanBg.classList.add("show");
     startCamera();
     try { scanVideo.play(); } catch (e) {}
+    startScanLoop();
   }
 
   function startCamera() {
@@ -1495,6 +1530,7 @@
   }
 
   function closeScan() {
+    stopScanLoop();
     if (scanStream) { scanStream.getTracks().forEach(function (t) { t.stop(); }); scanStream = null; }
     scanVideo.srcObject = null;
     scanBg.classList.remove("show");
@@ -1503,56 +1539,133 @@
 
   document.getElementById("scanClose").addEventListener("click", closeScan);
 
-  scanShutter.addEventListener("click", function () {
-    if (scanShutter.classList.contains("scan-processing")) return;
-    captureAndAnalyze();
-  });
+  /* ===== محرّك الكشف اللحظي ===== */
+  function startScanLoop() {
+    scanLocked = false;
+    scanLive = true;
+    scanRecent = [];
+    scanLastInfer = 0;
+    scanLiveTotal.classList.remove("locked");
+    if (scanRAF) cancelAnimationFrame(scanRAF);
+    scanRAF = requestAnimationFrame(scanTick);
+  }
+  function stopScanLoop() {
+    scanLive = false;
+    if (scanRAF) { cancelAnimationFrame(scanRAF); scanRAF = 0; }
+    clearScanOverlay();
+  }
+  function scanTick(ts) {
+    if (!scanLive) return;
+    scanRAF = requestAnimationFrame(scanTick);
+    if (scanInflight) return;                          // single-flight: قطعة واحدة في المرة
+    if (ts - scanLastInfer < SCAN_INTERVAL_MS) return; // كبح لـ ~3 لقطات/ثانية
+    scanLastInfer = ts;
+    var frame = grabScanFrame();                       // اللقطة الحالية (مقصوصة زي اللي ظاهر)
+    scanInflight = true;
+    detector.detect(frame).then(function (res) {
+      scanInflight = false;
+      if (scanLive) onScanDetect(res);
+    }).catch(function () { scanInflight = false; });
+  }
 
-  function captureAndAnalyze() {
+  // ناخد بس الجزء الظاهر من الفيديو (object-fit: cover) ونصغّره للموديل.
+  function grabScanFrame() {
     var vw = scanVideo.videoWidth, vh = scanVideo.videoHeight;
-    if (!vw || !vh) { toast("الكاميرا لسه مش جاهزة"); return; }
+    if (!vw || !vh) return null;
+    var rect = scanVideo.getBoundingClientRect();
+    var dispW = rect.width || vw, dispH = rect.height || vh;
+    var scale = Math.max(dispW / vw, dispH / vh);
+    var sw = dispW / scale, sh = dispH / scale, sx = (vw - sw) / 2, sy = (vh - sh) / 2;
+    var LONG = 480, aspect = dispW / dispH;
+    var outW = aspect >= 1 ? LONG : Math.round(LONG * aspect);
+    var outH = aspect >= 1 ? Math.round(LONG / aspect) : LONG;
+    scanCanvas.width = outW; scanCanvas.height = outH;
+    scanCanvas.getContext("2d").drawImage(scanVideo, sx, sy, sw, sh, 0, 0, outW, outH);
+    return scanCanvas;
+  }
 
-    // اتصوّرت الصورة هنا على طول — مفيش داعي تفضل مصوّب الكاميرا بعد كده.
-    scanCanvas.width = vw; scanCanvas.height = vh;
-    var ctx = scanCanvas.getContext("2d");
-    ctx.drawImage(scanVideo, 0, 0, vw, vh);
-    var b64 = scanCanvas.toDataURL("image/jpeg", 0.88).split(",")[1];
-    try { scanVideo.pause(); } catch (e) {}   // جمّد اللقطة كإشارة إن الصورة اتاخدت
+  function onScanDetect(res) {
+    drawScanOverlay(res.boxes, false);
+    scanLiveTotal.style.display = "block";
+    scanLiveNum.textContent = ar(res.total);
 
-    scanShutter.classList.add("scan-processing");
-    scanHint.textContent = scanMode === "fast" ? "📸 اتصوّرت ✓ بيحلل بسرعة…" : "📸 اتصوّرت ✓ بيحلل بدقة…";
-    vibrate(18);
+    // ثبات: نفس المجموع SCAN_STABLE_FRAMES مرات متتالية + ثقة كفاية + مجموع > 0
+    scanRecent.push({ total: res.total, conf: res.conf });
+    if (scanRecent.length > SCAN_STABLE_FRAMES) scanRecent.shift();
+    if (scanRecent.length === SCAN_STABLE_FRAMES) {
+      var first = scanRecent[0].total;
+      var allSame = scanRecent.every(function (r) { return r.total === first; });
+      var meanConf = scanRecent.reduce(function (s, r) { return s + r.conf; }, 0) / scanRecent.length;
+      if (allSame && first > 0 && meanConf >= SCAN_MIN_CONF) lockScanReading(res);
+    }
+  }
 
-    fetch("/api/scan-dominoes", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        image: b64,
-        mimeType: "image/jpeg",
-        mode: scanMode
-      })
-    })
-    .then(function (r) {
-      if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || "خطأ في السيرفر"); });
-      return r.json();
-    })
-    .then(function (data) {
-      var total = typeof data.totalScore === "number" ? data.totalScore : 0;
-      var tilesArray = (data.tiles || []).map(function (t) { return t.left + "|" + t.right; });
-      showScanResult(total, tilesArray);
-    })
-    .catch(function (e) {
-      var msg = e.message || "";
-      toast("خطأ في التحليل: " + msg.substring(0, 55));
-      scanShutter.classList.remove("scan-processing");
-      scanHint.textContent = "صوّر قطع الدومينو اللي في إيدك";
+  function lockScanReading(res) {
+    scanLocked = true;
+    scanLive = false;
+    if (scanRAF) { cancelAnimationFrame(scanRAF); scanRAF = 0; }   // وقّف الكشف لتوفير البطارية
+    drawScanOverlay(res.boxes, true);                              // صناديق خضرا = اتأكدنا
+    scanLiveTotal.classList.add("locked");
+    scanLiveNum.textContent = ar(res.total);
+    vibrate([20, 40, 20]);
+    showScanResult(res.total, pairTilesForDisplay(res.boxes));
+  }
+
+  function clearScanOverlay() {
+    var ctx = scanOverlay.getContext("2d");
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, scanOverlay.width, scanOverlay.height);
+  }
+  // نرسم الصناديق فوق الفيديو، كل صندوق مكتوب عليه عدد نقطه.
+  function drawScanOverlay(boxes, locked) {
+    var rect = scanVideo.getBoundingClientRect();
+    var W = rect.width, H = rect.height, dpr = window.devicePixelRatio || 1;
+    if (!W || !H) return;
+    if (scanOverlay.width !== Math.round(W * dpr) || scanOverlay.height !== Math.round(H * dpr)) {
+      scanOverlay.width = Math.round(W * dpr); scanOverlay.height = Math.round(H * dpr);
+    }
+    var ctx = scanOverlay.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    var stroke = locked ? "#9ed47f" : "rgba(255,255,255,.9)";
+    var fill = locked ? "rgba(133,180,110,.18)" : "rgba(255,255,255,.06)";
+    (boxes || []).forEach(function (b) {
+      var x = b.x * W, y = b.y * H, w = b.w * W, h = b.h * H;
+      ctx.lineWidth = 2.5; ctx.strokeStyle = stroke; ctx.fillStyle = fill;
+      roundRectPath(ctx, x, y, w, h, 9); ctx.fill(); ctx.stroke();
+      var label = ar(b.cls);
+      ctx.font = "800 15px Tajawal, sans-serif";
+      var tw = ctx.measureText(label).width + 12;
+      ctx.fillStyle = locked ? "#5f9243" : "rgba(0,0,0,.7)";
+      roundRectPath(ctx, x, y - 21, tw, 19, 6); ctx.fill();
+      ctx.fillStyle = "#fff"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+      ctx.fillText(label, x + 6, y - 11);
     });
   }
 
+  // نقرّن الأنصاف لأقرب نص تاني عشان نعرضها «5|6» (للعرض بس — المجموع مش محتاج تقرين).
+  function pairTilesForDisplay(boxes) {
+    var rem = (boxes || []).map(function (b) {
+      return { cls: b.cls, cx: b.x + b.w / 2, cy: b.y + b.h / 2, sz: Math.max(b.w, b.h), used: false };
+    });
+    var tiles = [];
+    for (var i = 0; i < rem.length; i++) {
+      if (rem[i].used) continue;
+      rem[i].used = true;
+      // نصّين بتوع نفس القطعة مركزهم على بُعد ~حجم النص؛ فالعتبة نسبية لحجم القطعة.
+      var lim = 1.5 * rem[i].sz, bestD = lim * lim, best = -1;
+      for (var j = i + 1; j < rem.length; j++) {
+        if (rem[j].used) continue;
+        var dx = rem[i].cx - rem[j].cx, dy = rem[i].cy - rem[j].cy, d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = j; }
+      }
+      if (best >= 0) { rem[best].used = true; tiles.push(rem[i].cls + "|" + rem[best].cls); }
+      else tiles.push(String(rem[i].cls));
+    }
+    return tiles;
+  }
+
   function showScanResult(total, tiles) {
-    scanShutter.classList.remove("scan-processing");
-    scanShutter.style.display = "none";
-    if (scanModeToggle) scanModeToggle.style.display = "none";
     document.getElementById("scanTotal").textContent = ar(total);
     document.getElementById("scanDetail").textContent = tiles && tiles.length ? tiles.join("  ·  ") : "";
     pendingScan = { total: total };
@@ -1562,11 +1675,13 @@
 
   document.getElementById("scanRetry").addEventListener("click", function () {
     scanResult.style.display = "none";
-    scanShutter.style.display = "grid";
-    if (scanModeToggle) scanModeToggle.style.display = "flex";
-    scanHint.textContent = "صوّر قطع الدومينو اللي في إيدك";
-    try { scanVideo.play(); } catch (e) {}   // رجّع البث المباشر للقطة جديدة
+    scanLiveTotal.classList.remove("locked");
+    scanHint.textContent = detector && detector.backend === "mock"
+      ? "🧪 نتايج تجريبية — وجّه على القطع تاني"
+      : "وجّه الكاميرا على القطع وثبّت شوية";
+    try { scanVideo.play(); } catch (e) {}
     pendingScan = null;
+    startScanLoop();                        // رجّع الكشف اللحظي للقراءة من جديد
   });
 
   // قناة بث مباشرة لاقتراحات المسح — بتبعت الرقم بس من غير ما تكتب الحالة كلها،
